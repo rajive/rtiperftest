@@ -9,6 +9,7 @@ import static java.lang.Math.abs;
 import static java.lang.Math.sqrt;
 import java.util.Arrays;
 
+import com.rti.perftest.harness.PerfTest;
 import com.rti.perftest.IMessagingCB;
 import com.rti.perftest.IMessagingReader;
 import com.rti.perftest.IMessagingWriter;
@@ -27,12 +28,10 @@ import com.rti.perftest.TestMessage;
     // Private Fields
     // -----------------------------------------------------------------------
 
-    private boolean _endTest = false;
-
     private long  _latencySum = 0;
     private long  _latencySumSquare = 0;
     private long  _count = 0;
-    private int   _latencyMin = 0;
+    private int   _latencyMin = PerfTest.LATENCY_RESET_VALUE;
     private int   _latencyMax = 0;
     private int   _lastDataLength = 0;
     private int[] _latencyHistory = null;
@@ -40,13 +39,15 @@ import com.rti.perftest.TestMessage;
     private int   _num_latency = 0;
 
     private IMessagingReader _reader = null;
-    private IMessagingWriter _writer = null;    
+    private IMessagingWriter _writer = null;
     private CpuMonitor CpuMonitor = new CpuMonitor();
 
 
     // -----------------------------------------------------------------------
     // Public Methods
     // -----------------------------------------------------------------------
+
+    public boolean end_test = false;
 
     // --- Constructors: -----------------------------------------------------
 
@@ -72,7 +73,7 @@ import com.rti.perftest.TestMessage;
 
     public void readThread() {
         TestMessage message;
-        while (!_endTest) {
+        while (!end_test) {
             // Receive message should block until a message is received
             message = _reader.receiveMessage();
             if (message != null) {
@@ -94,66 +95,11 @@ import com.rti.perftest.TestMessage;
 
             // Test finished message
             case PerfTest.FINISHED_SIZE:
-                // may get this message multiple times for 1 to N tests
-                if (_endTest == true)
-                {
-                    return;
-                }
-
-                _endTest = true;
-                // fall through...
+                return;
 
             // Data length is changing size
             case PerfTest.LENGTH_CHANGED_SIZE:
-
-                // will get a LENGTH_CHANGED message on startup before any data
-                if (_count == 0) {
-                    return;
-                }
-
-                if (_clockSkewCount != 0) {
-                    System.out.printf("The following latency result may not be accurate because clock skew happens %1$d times\n",
-                                      _clockSkewCount);
-                }
-
-                // sort the array (in ascending order)
-                Arrays.sort(_latencyHistory, 0, (int)_count);
-                double latency_ave = _latencySum / (double)_count;
-                // TODO: This std dev calculation isn't correct!
-                double latency_std = sqrt(
-                        abs(_latencySumSquare / (double)_count -
-                                (latency_ave * latency_ave)));
-                String outputCpu = "";
-                if (PerfTest._showCpu) {
-                    outputCpu = CpuMonitor.get_cpu_average();
-                }
-
-                System.out.printf(
-                        "Length: %1$5d  Latency: Ave %2$6.0f us  Std %3$6.1f us  " +
-                        "Min %4$6d us  Max %5$6d us  50%% %6$6d us  90%% %7$6d us  99%% %8$6d us  99.99%% %9$6d us  99.9999%% %10$6d us" + outputCpu + "\n",
-                        _lastDataLength + PerfTest.OVERHEAD_BYTES,
-                        latency_ave,
-                        latency_std,
-                        _latencyMin,
-                        _latencyMax,
-                        _latencyHistory[(int)(_count * 50/(double)100)],
-                        _latencyHistory[(int)(_count * 90/(double)100)],
-                        _latencyHistory[(int)(_count * 99/(double)100)],
-                        _latencyHistory[(int)(_count * (9999.0/(double)10000))],
-                        _latencyHistory[(int)(_count * (999999.0/(double)1000000))]
-                );
-                System.out.flush();
-                _latencySum = 0;
-                _latencySumSquare = 0;
-                _latencyMin = 0;
-                _latencyMax = 0;
-                _count = 0;
-                _clockSkewCount = 0;
-
-                if (_writer != null) {
-                    _writer.notifyPingResponse();
-                }
-
+                print_summary_latency();
                 return;
 
             default:
@@ -194,14 +140,13 @@ import com.rti.perftest.TestMessage;
             }
         }
 
-        if (_latencyMin == 0) {
+        if (_latencyMin == PerfTest.LATENCY_RESET_VALUE) {
             _latencyMin = latency;
             _latencyMax = latency;
         } else {
             if (latency < _latencyMin) {
                 _latencyMin = latency;
-            }
-            if (latency > _latencyMax) {
+            } else if (latency > _latencyMax) {
                 _latencyMax = latency;
             }
         }
@@ -242,6 +187,50 @@ import com.rti.perftest.TestMessage;
         if (_writer != null) {
             _writer.notifyPingResponse();
         }
+    }
+
+    public void print_summary_latency(){
+        if (_count == 0) {
+            return;
+        }
+
+        if (_clockSkewCount != 0) {
+            System.out.printf("The following latency result may not be accurate because clock skew happens %1$d times\n",
+                    _clockSkewCount);
+        }
+
+        // sort the array (in ascending order)
+        Arrays.sort(_latencyHistory, 0, (int)_count);
+        double latency_ave = _latencySum / (double)_count;
+        double latency_std = sqrt(
+                abs(_latencySumSquare / (double)_count -
+                        (latency_ave * latency_ave)));
+        String outputCpu = "";
+        if (PerfTest._showCpu) {
+            outputCpu = CpuMonitor.get_cpu_average();
+        }
+
+        System.out.printf(
+                "Length: %1$5d  Latency: Ave %2$6.0f us  Std %3$6.1f us  " +
+                "Min %4$6d us  Max %5$6d us  50%% %6$6d us  90%% %7$6d us  99%% %8$6d us  99.99%% %9$6d us  99.9999%% %10$6d us" + outputCpu + "\n",
+                _lastDataLength + PerfTest.OVERHEAD_BYTES,
+                latency_ave,
+                latency_std,
+                _latencyMin,
+                _latencyMax,
+                _latencyHistory[(int)(_count * 50 / (double)100)],
+                _latencyHistory[(int)(_count * 90 / (double)100)],
+                _latencyHistory[(int)(_count * 99 / (double)100)],
+                _latencyHistory[(int)(_count * (9999.0 / (double)10000))],
+                _latencyHistory[(int)(_count * (999999.0 / (double)1000000))]
+        );
+        System.out.flush();
+        _latencySum = 0;
+        _latencySumSquare = 0;
+        _latencyMin = PerfTest.LATENCY_RESET_VALUE;
+        _latencyMax = 0;
+        _count = 0;
+        _clockSkewCount = 0;
     }
 
 }

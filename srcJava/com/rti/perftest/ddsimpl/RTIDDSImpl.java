@@ -7,6 +7,7 @@ package com.rti.perftest.ddsimpl;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.util.HashMap;
 import java.util.StringTokenizer;
 
 import com.rti.dds.domain.DomainParticipant;
@@ -41,7 +42,13 @@ import com.rti.perftest.IMessagingWriter;
 import com.rti.perftest.TestMessage;
 import com.rti.perftest.gen.MAX_SYNCHRONOUS_SIZE;
 import com.rti.perftest.gen.MAX_BOUNDED_SEQ_SIZE;
+import com.rti.perftest.gen.MAX_CFT_VALUE;
+import com.rti.perftest.gen.THROUGHPUT_TOPIC_NAME;
+import com.rti.perftest.gen.LATENCY_TOPIC_NAME;
+import com.rti.perftest.gen.ANNOUNCEMENT_TOPIC_NAME;
 import com.rti.perftest.gen.KEY_SIZE;
+import com.rti.perftest.gen.DEFAULT_THROUGHPUT_BATCH_SIZE;
+import com.rti.perftest.gen.MAX_PERFTEST_SAMPLE_SIZE;
 import com.rti.perftest.harness.PerfTest;
 
 
@@ -77,43 +84,42 @@ public final class RTIDDSImpl<T> implements IMessaging {
     private static String SECUREPERMISIONFILESUB = "./resource/secure/signed_PerftestPermissionsSub.xml";
     private static String SECURELIBRARYNAME = "nddssecurity";
 
+    private static final int RTIPERFTEST_MAX_PEERS = 1024;
+
     private int     _sendQueueSize = 50;
     private Duration_t _heartbeatPeriod = new Duration_t(0,0);
     private Duration_t _fastHeartbeatPeriod = new Duration_t (0,0);
     private long     _dataLen = 100;
     private long     _useUnbounded = 0;
     private int     _domainID = 1;
-    private String  _nic = "";
     private String  _profileFile = "perftest_qos_profiles.xml";
     private boolean _isReliable = true;
-    private boolean _isMulticast = false;
     private boolean _AutoThrottle = false;
     private boolean _TurboMode = false;
-    private boolean _useTcpOnly = false;
     private int     _instanceCount = 1;
     private int     _instanceMaxCountReader = -1;
     private int     _instanceHashBuckets = -1;
     private int     _durability = 0;
     private boolean _directCommunication = true;
-    private int     _batchSize = 0;
-    private int     _keepDurationUsec = 1000;
+    private int     _batchSize = DEFAULT_THROUGHPUT_BATCH_SIZE.VALUE;
+    private int     _keepDurationUsec = -1;
     private boolean _usePositiveAcks = true;
-    private boolean _useSharedMemory = false;
-    private boolean _useUdpv6 = false;
     private boolean _isDebug = false;
     private boolean _latencyTest = false;
     private boolean _isLargeData = false;
     private boolean _isScan = false;
     private boolean _isPublisher = false;
     private boolean _IsAsynchronous = false;
+    private boolean _isDynamicData = false;
     private String  _FlowControllerCustom = "default";
     String[] valid_flow_controller = {"default", "1Gbps", "10Gbps"};
-    static int             RTIPERFTEST_MAX_PEERS = 1024;
     private int     _peer_host_count = 0;
     private String[] _peer_host = new String[RTIPERFTEST_MAX_PEERS];
     private boolean _useCft = false;
     private int     _instancesToBeWritten = -1;
     private int[]   _CFTRange = {0, 0};
+
+    private PerftestTransport _transport;
 
 
     private boolean _secureUseSecure = false;
@@ -124,7 +130,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
     private String _secureCertAuthorityFile = null;
     private String _secureCertificateFile = null;
     private String _securePrivateKeyFile = null;
-    
+
     /*
      * if _GovernanceFile is specified, overrides the options for
      * signing, encrypting, and authentication.
@@ -142,6 +148,9 @@ public final class RTIDDSImpl<T> implements IMessaging {
     private String _typename = null;
 
     private TypeHelper<T> _myDataType = null;
+    private RTIDDSLoggerDevice _loggerDevice = null;
+
+    private static HashMap<String, String> _qoSProfileNameMap = new HashMap<String, String>();
 
     // -----------------------------------------------------------------------
     // Public Methods
@@ -151,6 +160,11 @@ public final class RTIDDSImpl<T> implements IMessaging {
 
     public RTIDDSImpl(TypeHelper<T> typeHelper) {
         _myDataType = typeHelper;
+        _transport = new PerftestTransport();
+
+        _qoSProfileNameMap.put(LATENCY_TOPIC_NAME.VALUE, "LatencyQos");
+        _qoSProfileNameMap.put(ANNOUNCEMENT_TOPIC_NAME.VALUE, "AnnouncementQos");
+        _qoSProfileNameMap.put(THROUGHPUT_TOPIC_NAME.VALUE, "ThroughputQos");
     }
 
     public void dispose() {
@@ -181,91 +195,102 @@ public final class RTIDDSImpl<T> implements IMessaging {
                 _participant = null;
             }
         }
+        // Unregister _loggerDevice
+        try {
+            Logger.get_instance().set_output_device(null);
+        } catch (Exception e) {
+            System.err.print("Failed set_output_device for Logger.\n");
+        }
     }
 
     public int getBatchSize() {
         return _batchSize;
     }
 
+    public int getInitializationSampleCount() {
+
+        /*
+         * There is a minimum number of samples that we want to send no matter
+         * what the conditions are:
+         */
+        int initializeSampleCount = 50;
+
+        /*
+         * If we are using reliable, the maximum burst of that we can send is
+         * limited by max_send_window_size (or max samples, but we will assume
+         * this is not the case for this). In such case we should send
+         * max_send_window_size samples.
+         *
+         * If we are not using reliability this should not matter.
+         */
+        initializeSampleCount = Math.max(
+                initializeSampleCount,
+                _sendQueueSize);
+
+        /*
+         * If we are using batching we need to take into account tha the Send
+         * Queue will be per-batch, therefore for the number of samples:
+         */
+        if (_batchSize > 0) {
+            initializeSampleCount = Math.max(
+                    (int) (_sendQueueSize * (_batchSize / _dataLen)),
+                    initializeSampleCount);
+        }
+
+        return initializeSampleCount;
+    }
+
     public void printCmdLineHelp() {
         /**************************************************************************/
         String usage_string =
-            "\t-sendQueueSize <number> - Sets number of samples (or batches) in send\n" +
-            "\t                          queue, default 50\n" +
-            "\t-domain <ID>            - RTI DDS Domain, default 1\n" +
-            "\t-qosprofile <filename>  - Name of XML file for DDS Qos profiles,\n" +
-            "\t                          defaukt: perftest_qos_profiles.xml\n" +
-            "\t-qosLibrary <lib name>  - Name of QoS Library for DDS Qos profiles, \n" +
-            "\t                          default: PerftestQosLibrary\n" +
-            "\t-nic <ipaddr>           - Use only the nic specified by <ipaddr>.\n" +
-            "\t                          If unspecified, use all available interfaces\n" +
-            "\t-multicast              - Use multicast to send data, default not to\n"+
-            "\t                          use multicast\n" + 
-            "\t-nomulticast            - Do not use multicast to send data (default),\n" +
-            "\t-multicastAddress <ipaddr> - Multicast address to use for receiving \n" +
-            "\t                          latency/announcement (pub) and \n" +
-            "\t                          throughtput (sub) data. \n" +
-            "\t                          If unspecified: latency 239.255.1.2,\n" +
-            "\t                          announcement 239.255.1.100,\n" +
-            "\t                          throughput 239.255.1.1\n" +
-            "\t-bestEffort             - Run test in best effort mode, default reliable\n" +
-            "\t-batchSize <bytes>      - Size in bytes of batched message,\n" +
-            "\t                          default 0 (no batching)\n" +
-            "\t-noPositiveAcks         - Disable use of positive acks in reliable\n" +
-            "\t                          protocol, default use positive acks\n" +
-            "\t-keepDurationUsec <usec> - Minimum time (us) to keep samples when\n" +
-            "\t                          positive acks are disabled, default 1000 us\n" +
-            "\t-enableSharedMemory     - Enable use of shared memory transport and\n" +
-            "\t                          disable all the other transports, default\n"+
-            "\t                          shared memory not enabled\n" +
-            "\t-enableUdpv6            - Enable use of the Udpv6 transport and \n" +
-            "\t                          disable all the other transports, default\n" +
-            "\t                          udpv6 not enabled\n" +
-            "\t-enableTcp              - Enable use of tcp transport and disable all\n"+
-            "\t                          the other transports, default do not use\n" +
-            "\t                          tcp transport\n" +
-            "\t-heartbeatPeriod <sec>:<nanosec>     - Sets the regular heartbeat period\n" +
-            "\t                          for the throughput DataWriter, default 0:0\n" +
-            "\t                          (use XML QoS Profile value)\n" +
-            "\t-fastHeartbeatPeriod <sec>:<nanosec> - Sets the fast heartbeat period\n" +
-            "\t                          for the throughput DataWriter, default 0:0\n" +
-            "\t                          (use XML QoS Profile value)\n" +
-            "\t-durability <0|1|2|3>   - Set durability QOS, 0 - volatile,\n" +
-            "\t                          1 - transient local, 2 - transient,\n" +
-            "\t                          3 - persistent, default 0\n" +
-            "\t-dynamicData            - Makes use of the Dynamic Data APIs instead\n" +
-            "\t                          of using the generated types.\n" +
-            "\t-noDirectCommunication  - Use brokered mode for persistent durability\n" +
-            "\t-instanceHashBuckets <#count> - Number of hash buckets for instances.\n" +
-            "\t                          If unspecified, same as number of\n" +
-            "\t                          instances.\n" +
-            "\t-waitsetDelayUsec <usec>   - UseReadThread related. Allows you to\n" +
-            "\t                          process incoming data in groups, based on the\n" +
-            "\t                          time rather than individually. It can be used \n" +
-            "\t                          combined with -waitsetEventCount,\n" +
-            "\t                          default 100 usec\n" +
-            "\t-waitsetEventCount <count> - UseReadThread related. Allows you to\n" +
-            "\t                          process incoming data in groups, based on the\n" +
-            "\t                          number of samples rather than individually. It\n" +
-            "\t                          can be used combined with -waitsetDelayUsec,\n" +
-            "\t                          default 5\n" +
-            "\t-enableAutoThrottle     - Enables the AutoThrottling feature in the\n"+
-            "\t                          throughput DataWriter (pub)\n"+
-            "\t-enableTurboMode        - Enables the TurboMode feature in the throughput\n"+
-            "\t                          DataWriter (pub)\n" +
-            "\t-asynchronous           - Use asynchronous writer\n" +
-            "\t                          Default: Not set\n" +
-            "\t-flowController <flow>  - In the case asynchronous writer use a specific flow controller.\n" +
-            "\t                          There are several flow controller predefined:\n" +
-            "\t                          ";
-            for (String flow : valid_flow_controller)
-            {
-                usage_string += flow + "  ";
+            "\t-sendQueueSize <number>       - Sets number of samples (or batches) in send\n" +
+            "\t                                queue, default 50\n" +
+            "\t-domain <ID>                  - RTI DDS Domain, default 1\n" +
+            "\t-qosFile <filename>           - Name of XML file for DDS Qos profiles,\n" +
+            "\t                                default: perftest_qos_profiles.xml\n" +
+            "\t-qosLibrary <lib name>        - Name of QoS Library for DDS Qos profiles, \n" +
+            "\t                                default: PerftestQosLibrary\n" +
+            "\t-bestEffort                   - Run test in best effort mode, default reliable\n" +
+            "\t-batchSize <bytes>            - Size in bytes of batched message, default 8kB\n" +
+            "\t                                (Disabled for LatencyTest mode or if dataLen > 4kB)\n" +
+            "\t-noPositiveAcks               - Disable use of positive acks in reliable \n" +
+            "\t                                protocol, default use positive acks\n" +
+            "\t-durability <0|1|2|3>         - Set durability QOS, 0 - volatile,\n" +
+            "\t                                1 - transient local, 2 - transient, \n" +
+            "\t                                3 - persistent, default 0\n" +
+            "\t-dynamicData                  - Makes use of the Dynamic Data APIs instead\n" +
+            "\t                                of using the generated types.\n" +
+            "\t-noDirectCommunication        - Use brokered mode for persistent durability\n" +
+            "\t-waitsetDelayUsec <usec>      - UseReadThread related. Allows you to\n" +
+            "\t                                process incoming data in groups, based on the\n" +
+            "\t                                time rather than individually. It can be used\n" +
+            "\t                                combined with -waitsetEventCount,\n" +
+            "\t                                default 100 usec\n" +
+            "\t-waitsetEventCount <count>    - UseReadThread related. Allows you to\n" +
+            "\t                                process incoming data in groups, based on the\n" +
+            "\t                                number of samples rather than individually. It\n" +
+            "\t                                can be used combined with -waitsetDelayUsec,\n" +
+            "\t                                default 5\n" +
+            "\t-enableAutoThrottle           - Enables the AutoThrottling feature in the\n" +
+            "\t                                throughput DataWriter (pub)\n" +
+            "\t-enableTurboMode              - Enables the TurboMode feature in the\n" +
+            "\t                                throughput DataWriter (pub)\n" +
+            "\t-asynchronous                 - Use asynchronous writer\n" +
+            "\t                                Default: Not set\n" +
+            "\t-flowController <flow>        - In the case asynchronous writer use a specific flow controller.\n" +
+            "\t                                There are several flow controller predefined:\n" +
+            "\t                                ";
+            for (String flow : valid_flow_controller) {
+                usage_string += "\"" + flow + "\" ";
             }
             usage_string += "\n" +
-            "\t                          Default: set default\n" +
-            "\t-peer <address>          - Adds a peer to the peer host address list.\n" +
-            "\t                          This argument may be repeated to indicate multiple peers\n" +
+            "\t                                Default: \"default\" (If using asynchronous).\n" +
+            "\t-peer <address>               - Adds a peer to the peer host address list.\n" +
+            "\t                                This argument may be repeated to indicate multiple peers\n" +
+            "\n";
+            usage_string += _transport.helpMessageString();
+            usage_string += "\n" +
+            "\t======================= SECURE Specific Options =======================\n\n" +
             "\t-secureEncryptDiscovery       - Encrypt discovery traffic\n" +
             "\t-secureSign                   - Sign (HMAC) discovery and user data\n" +
             "\t-secureEncryptData            - Encrypt topic (user) data\n" +
@@ -287,9 +312,18 @@ public final class RTIDDSImpl<T> implements IMessaging {
     }
 
     public boolean initialize(int argc, String[] argv) {
-        
+
+        // Register _loggerDevice
+        _loggerDevice = new RTIDDSLoggerDevice();
+        try {
+            Logger.get_instance().set_output_device(_loggerDevice);
+        } catch (Exception e) {
+            System.err.print("Failed set_output_device for Logger.\n");
+            return false;
+        }
+
         _typename = _myDataType.getTypeSupport().get_type_nameI();
-        
+
         _factory = DomainParticipantFactory.get_instance();
 
         if (!parseConfig(argc, argv)) {
@@ -326,7 +360,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
 
         // Configure DDSDomainParticipant QOS
         DomainParticipantQos qos = new DomainParticipantQos();
-        _factory.get_participant_qos_from_profile(qos, PROFILE_LIBRARY_NAME, "TransportQos");
+        _factory.get_participant_qos_from_profile(qos, PROFILE_LIBRARY_NAME, "BaseProfileQos");
 
         if (_secureUseSecure) {
             // validate arguments
@@ -338,12 +372,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
         }
 
         // set initial peers and not use multicast
-        if ( _peer_host_count > 0 ) {
-            System.out.print("Initial peers: ");
-            for ( int i =0; i< _peer_host_count; ++i) {
-                System.out.print(_peer_host[i]+" ");
-            }
-            System.out.print("\n");
+        if (_peer_host_count > 0) {
             qos.discovery.initial_peers.clear();
             qos.discovery.initial_peers.setMaximum(_peer_host_count);
             for (int i = 0; i < _peer_host_count; ++i) {
@@ -352,20 +381,8 @@ public final class RTIDDSImpl<T> implements IMessaging {
             qos.discovery.multicast_receive_addresses.clear();
         }
 
-        qos.transport_builtin.mask = TransportBuiltinKind.UDPv4;
-        
-        // set transports to use
-        if (_useTcpOnly) {
-            qos.transport_builtin.mask = TransportBuiltinKind.MASK_NONE;
-            PropertyQosPolicyHelper.add_property(
-                    qos.property,
-                    "dds.transport.load_plugins",
-                    "dds.transport.TCPv4.tcp1",
-                    false);
-        } else if (_useSharedMemory) {
-            qos.transport_builtin.mask = TransportBuiltinKind.SHMEM;
-        } else if (_useUdpv6) {
-            qos.transport_builtin.mask = TransportBuiltinKind.UDPv6;
+        if(!_transport.configureTransport(qos)) {
+            return false;
         }
 
         if (_AutoThrottle) {
@@ -376,34 +393,6 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     false);
         }
 
-        if (_useSharedMemory) {
-
-            // Shmem transport properties
-            int receivedMessageCountMax = 2 * 1024 * 1024 / (int)_dataLen;
-            if (receivedMessageCountMax < 1) {
-                receivedMessageCountMax = 1;
-            }
-
-            PropertyQosPolicyHelper.add_property(
-                qos.property,
-                "dds.transport.shmem.builtin.received_message_count_max",
-                String.valueOf(receivedMessageCountMax),
-                false);
-        } else {
-            if (_nic.length() > 0) {
-                PropertyQosPolicyHelper.add_property(
-                        qos.property,
-                        "dds.transport.UDPv4.builtin.parent.allow_interfaces",
-                        _nic,
-                        false);
-                PropertyQosPolicyHelper.add_property(
-                        qos.property,
-                        "dds.transport.TCPv4.tcp1.parent.allow_interfaces",
-                        _nic,
-                        false);
-            }
-        }
-
         // Creates the participant
         DomainParticipantListener listener = new DomainListener();
         _participant = _factory.create_participant(
@@ -412,7 +401,14 @@ public final class RTIDDSImpl<T> implements IMessaging {
              StatusKind.OFFERED_INCOMPATIBLE_QOS_STATUS |
              StatusKind.REQUESTED_INCOMPATIBLE_QOS_STATUS));
 
-        if (_participant == null) {
+        if (_participant == null || _loggerDevice.checkShmemErrors()) {
+            if (_loggerDevice.checkShmemErrors()) {
+                System.err.print(
+                        "The participant creation failed due to issues in the Shared Memory configuration of your OS.\n" +
+                        "For more information about how to configure Shared Memory see: http://community.rti.com/kb/osx510 \n" +
+                        "If you want to skip the use of Shared memory in RTI Perftest, " +
+                        "specify the transport using \"-transport <kind>\", e.g. \"-transport UDPv4\".\n");
+            }
             System.err.print("Problem creating participant.\n");
             return false;
         }
@@ -423,16 +419,16 @@ public final class RTIDDSImpl<T> implements IMessaging {
 
         // Create the Publisher and Subscriber
         {
-            _publisher = _participant.create_publisher_with_profile(
-            	PROFILE_LIBRARY_NAME, "TransportQos", null, StatusKind.STATUS_MASK_NONE);
+            _publisher = _participant.create_publisher_with_profile(PROFILE_LIBRARY_NAME, "BaseProfileQos", null,
+                    StatusKind.STATUS_MASK_NONE);
 
             if (_publisher == null) {
                 System.err.print("Problem creating publisher.\n");
                 return false;
             }
 
-            _subscriber = _participant.create_subscriber_with_profile(
-            	PROFILE_LIBRARY_NAME, "TransportQos", null, StatusKind.STATUS_MASK_NONE);
+            _subscriber = _participant.create_subscriber_with_profile(PROFILE_LIBRARY_NAME, "BaseProfileQos", null,
+                    StatusKind.STATUS_MASK_NONE);
 
             if (_subscriber == null) {
                 System.err.print("Problem creating subscriber.\n");
@@ -458,27 +454,9 @@ public final class RTIDDSImpl<T> implements IMessaging {
             return null;
         }
 
-        if (PerfTest.THROUGHPUT_TOPIC_NAME.equals(topicName)) {
-            if (_usePositiveAcks) {
-                qosProfile = "ThroughputQos";
-            } else {
-                qosProfile = "NoAckThroughputQos";
-            }
-        } else if (PerfTest.LATENCY_TOPIC_NAME.equals(topicName)) {
-            if (_usePositiveAcks) {
-                qosProfile = "LatencyQos";
-            } else {
-                qosProfile = "NoAckLatencyQos";
-            }
-        } else if (PerfTest.ANNOUNCEMENT_TOPIC_NAME.equals(topicName)) {
-            qosProfile = "AnnouncementQos";
-        }
-        else {
-            System.err.println(
-                    "topic name must either be " +
-                    PerfTest.THROUGHPUT_TOPIC_NAME + " or " +
-                    PerfTest.LATENCY_TOPIC_NAME  + " or " +
-                    PerfTest.ANNOUNCEMENT_TOPIC_NAME);
+        qosProfile = getQoSProfileName(topicName);
+        if (qosProfile == null) {
+            System.err.print("Problem getting qos profile.\n");
             return null;
         }
 
@@ -538,6 +516,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
      *              ")"
      *          The main goal for comaparing a instances and a key is by analyze the elemetns by more significant to the lest significant.
      *          So, in the case that the key is between [ {0, 0, 0, 1} and { 0, 0, 1, 44} ], it will be received.
+     * Beside, there is a special case where all the subscribers will receive the samples, it is MAX_CFT_VALUE = 65535 = [255,255,0,0,]
      */
     public TopicDescription createCft(String topicName, Topic topic) {
         String condition;
@@ -548,7 +527,8 @@ public final class RTIDDSImpl<T> implements IMessaging {
             for (int i = 0; i < KEY_SIZE.VALUE ; i++) {
                 param_list[i] = String.valueOf(byteToUnsignedInt((byte)(_CFTRange[0] >>> i * 8)));
             }
-            condition = "(%0 = key[0] AND  %1 = key[1] AND %2 = key[2] AND  %3 = key[3])";
+            condition = "(%0 = key[0] AND  %1 = key[1] AND %2 = key[2] AND  %3 = key[3]) OR " +
+                        "(255 = key[0] AND 255 = key[1] AND 0 = key[2] AND 0 = key[3])";
         } else { // If range
             param_list = new String[KEY_SIZE.VALUE*2];
             System.err.println("CFT enabled for instance range: ["+_CFTRange[0]+","+_CFTRange[1]+"] ");
@@ -571,7 +551,8 @@ public final class RTIDDSImpl<T> implements IMessaging {
                             "(%7 >= key[3] AND %6 > key[2]) OR" +
                             "(%7 >= key[3] AND %6 >= key[2] AND %5 > key[1]) OR" +
                             "(%7 >= key[3] AND %6 >= key[2] AND %5 >= key[1] AND %4 >= key[0])" +
-                        ")" +
+                        ") OR (" +
+                            "255 = key[0] AND 255 = key[1] AND 0 = key[2] AND 0 = key[3]" +
                     ")";
         }
         return _participant.create_contentfilteredtopic(
@@ -591,27 +572,9 @@ public final class RTIDDSImpl<T> implements IMessaging {
         TopicDescription  topic_desc = topic; // Used to create the DDS DataReader
 
         String qosProfile;
-        if (PerfTest.THROUGHPUT_TOPIC_NAME.equals(topicName)) {
-            if (_usePositiveAcks) {
-                qosProfile = "ThroughputQos";
-            } else {
-                qosProfile = "NoAckThroughputQos";
-            }
-        } else if (PerfTest.LATENCY_TOPIC_NAME.equals(topicName)) {
-            if (_usePositiveAcks) {
-                qosProfile = "LatencyQos";
-            } else {
-                qosProfile = "NoAckLatencyQos";
-            }
-        } else if (PerfTest.ANNOUNCEMENT_TOPIC_NAME.equals(topicName)) {
-            qosProfile = "AnnouncementQos";
-        }
-        else {
-            System.err.println(
-                    "topic name must either be " +
-                    PerfTest.THROUGHPUT_TOPIC_NAME + " or " +
-                    PerfTest.LATENCY_TOPIC_NAME  + " or " +
-                    PerfTest.ANNOUNCEMENT_TOPIC_NAME);
+        qosProfile = getQoSProfileName(topicName);
+        if (qosProfile == null) {
+            System.err.print("Problem getting qos profile.\n");
             return null;
         }
 
@@ -637,7 +600,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
             statusFlag = StatusKind.DATA_AVAILABLE_STATUS;
         }
 
-        if (PerfTest.THROUGHPUT_TOPIC_NAME.equals(topicName) && _useCft) {
+        if (THROUGHPUT_TOPIC_NAME.VALUE.equals(topicName) && _useCft) {
             topic_desc = createCft(topicName, topic);
             if (topic_desc == null) {
                 System.err.println("create_contentfilteredtopic error");
@@ -655,8 +618,8 @@ public final class RTIDDSImpl<T> implements IMessaging {
             return null;
         }
 
-        if (PerfTest.LATENCY_TOPIC_NAME.equals(topicName) ||
-            PerfTest.THROUGHPUT_TOPIC_NAME.equals(topicName)) {
+        if (LATENCY_TOPIC_NAME.VALUE.equals(topicName) ||
+            THROUGHPUT_TOPIC_NAME.VALUE.equals(topicName)) {
             _reader = reader;
         }
 
@@ -705,7 +668,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
         return true;
     }
 
-    private void printSecureArgs() {
+    private String printSecureArgs() {
 
         String secure_arguments_string =
                 "Secure Arguments:\n" +
@@ -758,14 +721,11 @@ public final class RTIDDSImpl<T> implements IMessaging {
         if( _secyreDebugLevel != -1 ){
             secure_arguments_string += "\t debug level: " + _secyreDebugLevel + "\n";
         }
-        System.out.print(secure_arguments_string);
+        return secure_arguments_string;
     }
 
     private void configureSecurePlugin(DomainParticipantQos dpQos) {
         // configure use of security plugins, based on provided arguments
-
-        // print arguments
-        printSecureArgs();
 
         // load plugin
         PropertyQosPolicyHelper.add_property(
@@ -786,35 +746,42 @@ public final class RTIDDSImpl<T> implements IMessaging {
                 _secureLibrary,
                 false);
 
+        /*
+         * Below, we are using com.rti.serv.secure properties in order to be
+         * backward compatible with RTI Connext DDS 5.3.0 and below. Later
+         * versions use the properties that are specified in the DDS Security
+         * specification (see also the RTI Security Plugins Getting Started
+         * Guide). However, later versions still support the legacy properties
+         * as an alternative.
+         */
+
         // check if governance file provided
         if (_governanceFile == null) {
             // choose a pre-built governance file
-            String file = "resource/secure/signed_PerftestGovernance_";
+            _governanceFile = "resource/secure/signed_PerftestGovernance_";
 
             if (_secureIsDiscoveryEncrypted) {
-                file += "Discovery";
+                _governanceFile += "Discovery";
             }
 
             if (_secureIsSigned) {
-                file += "Sign";
+                _governanceFile += "Sign";
             }
 
             if (_secureIsDataEncrypted && _secureIsSMEncrypted) {
-                file += "EncryptBoth";
+                _governanceFile += "EncryptBoth";
             } else if (_secureIsDataEncrypted) {
-                file += "EncryptData";
+                _governanceFile += "EncryptData";
             } else if (_secureIsSMEncrypted) {
-                file += "EncryptSubmessage";
+                _governanceFile += "EncryptSubmessage";
             }
 
-            file = file + ".xml";
+            _governanceFile += ".xml";
 
-            System.out.println("Secure: using pre-built governance file:" + 
-                    file);
             PropertyQosPolicyHelper.add_property(
                     dpQos.property,
                     "com.rti.serv.secure.access_control.governance_file",
-                    file,
+                    _governanceFile,
                     false);
         } else {
             PropertyQosPolicyHelper.add_property(
@@ -871,9 +838,16 @@ public final class RTIDDSImpl<T> implements IMessaging {
     private void configureWriterQos(
             String topicName, String qosProfile, DataWriterQos dwQos) {
         // Configure ACKs
-        if (_usePositiveAcks) {
-            dwQos.protocol.rtps_reliable_writer.disable_positive_acks_min_sample_keep_duration.sec = (_keepDurationUsec * 1000) / 1000000000;
-            dwQos.protocol.rtps_reliable_writer.disable_positive_acks_min_sample_keep_duration.nanosec = (_keepDurationUsec * 1000) % 1000000000;
+        if (!_usePositiveAcks
+                && ("ThroughputQos".equals(qosProfile)
+                    || "LatencyQos".equals(qosProfile))) {
+            dwQos.protocol.disable_positive_acks = true;
+            if (_keepDurationUsec != -1) {
+                dwQos.protocol.rtps_reliable_writer.disable_positive_acks_min_sample_keep_duration.sec =
+                    Duration_t.from_micros(_keepDurationUsec).sec;
+                dwQos.protocol.rtps_reliable_writer.disable_positive_acks_min_sample_keep_duration.nanosec =
+                    Duration_t.from_micros(_keepDurationUsec).nanosec;
+            }
         }
 
         if (_useUnbounded > 0) {
@@ -888,34 +862,31 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     "1", false);
         }
 
-        if ((_isLargeData) && (!_isScan) || _IsAsynchronous)
+        if (_isLargeData || _IsAsynchronous)
         {
-            System.err.println("Using asynchronous write for " + topicName + ".");
             dwQos.publish_mode.kind = PublishModeQosPolicyKind.ASYNCHRONOUS_PUBLISH_MODE_QOS;
             if (!_FlowControllerCustom.toLowerCase().startsWith("default".toLowerCase())) {
                 dwQos.publish_mode.flow_controller_name = "dds.flow_controller.token_bucket."+_FlowControllerCustom;
             }
-            System.err.println("Using flow controller " + _FlowControllerCustom + ".");
         }
 
         // Configure reliability
-        if (!PerfTest.ANNOUNCEMENT_TOPIC_NAME.equals(topicName)) {
+        if (!ANNOUNCEMENT_TOPIC_NAME.VALUE.equals(topicName)) {
             if (_isReliable) {
-            	// default: use the setting specified in the qos profile
-                //dwQos.reliability.kind = ReliabilityQosPolicyKind.RELIABLE_RELIABILITY_QOS;
- 
+                // default: use the setting specified in the qos profile
+                // dwQos.reliability.kind = ReliabilityQosPolicyKind.RELIABLE_RELIABILITY_QOS;
+
             } else {
-            	// override to best-effort
+                // override to best-effort
                 dwQos.reliability.kind =
                     ReliabilityQosPolicyKind.BEST_EFFORT_RELIABILITY_QOS;
             }
         }
 
         // These QOS's are only set for the Throughput datawriter
-        if ("ThroughputQos".equals(qosProfile) ||
-            "NoAckThroughputQos".equals(qosProfile)) {
+        if ("ThroughputQos".equals(qosProfile)) {
 
-            if (_isMulticast) {
+            if (_transport.useMulticast) {
                 dwQos.protocol.rtps_reliable_writer.enable_multicast_periodic_heartbeat = true;
             }
 
@@ -924,7 +895,6 @@ public final class RTIDDSImpl<T> implements IMessaging {
                 dwQos.batch.max_data_bytes = _batchSize;
                 dwQos.resource_limits.max_samples = ResourceLimitsQosPolicy.LENGTH_UNLIMITED;
                 dwQos.writer_resource_limits.max_batches = _sendQueueSize;
-                
             } else {
                 dwQos.resource_limits.max_samples = _sendQueueSize;
             }
@@ -961,7 +931,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
             dwQos.resource_limits.initial_samples = _sendQueueSize;
             dwQos.resource_limits.max_samples_per_instance
                 = dwQos.resource_limits.max_samples;
-            
+
             switch(_durability){
             case 0:
                 dwQos.durability.kind = DurabilityQosPolicyKind.VOLATILE_DURABILITY_QOS;
@@ -980,7 +950,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
             dwQos.durability.direct_communication = _directCommunication;
 
             dwQos.protocol.rtps_reliable_writer.heartbeats_per_max_samples = _sendQueueSize / 10;
-            
+
             dwQos.protocol.rtps_reliable_writer.low_watermark = _sendQueueSize * 1 / 10;
             dwQos.protocol.rtps_reliable_writer.high_watermark = _sendQueueSize * 9 / 10;
 
@@ -995,19 +965,18 @@ public final class RTIDDSImpl<T> implements IMessaging {
                         dwQos.protocol.rtps_reliable_writer.high_watermark + 1;
             }
 
-            dwQos.protocol.rtps_reliable_writer.max_send_window_size = 
+            dwQos.protocol.rtps_reliable_writer.max_send_window_size =
                     _sendQueueSize;
-            dwQos.protocol.rtps_reliable_writer.min_send_window_size = 
+            dwQos.protocol.rtps_reliable_writer.min_send_window_size =
                     _sendQueueSize;
         }
 
-        if (("LatencyQos".equals(qosProfile) ||
-             "NoAckLatencyQos".equals(qosProfile)) &&
-             !_directCommunication &&
-             (_durability == 2 ||
-              _durability == 3)){
+        if ("LatencyQos".equals(qosProfile)
+                && !_directCommunication
+                && (_durability == DurabilityQosPolicyKind.TRANSIENT_DURABILITY_QOS.ordinal()
+                    || _durability == DurabilityQosPolicyKind.PERSISTENT_DURABILITY_QOS.ordinal())) {
 
-            if(_durability == 2){
+            if (_durability == DurabilityQosPolicyKind.TRANSIENT_DURABILITY_QOS.ordinal()) {
                 dwQos.durability.kind = DurabilityQosPolicyKind.TRANSIENT_DURABILITY_QOS;
             } else{
                 dwQos.durability.kind = DurabilityQosPolicyKind.PERSISTENT_DURABILITY_QOS;
@@ -1016,8 +985,8 @@ public final class RTIDDSImpl<T> implements IMessaging {
             dwQos.durability.direct_communication = _directCommunication;
         }
 
-        dwQos.resource_limits.max_instances = _instanceCount;
-        dwQos.resource_limits.initial_instances = _instanceCount;
+        dwQos.resource_limits.max_instances = _instanceCount + 1; // One extra for MAX_CFT_VALUE
+        dwQos.resource_limits.initial_instances = _instanceCount + 1;
 
         if (_instanceCount > 1) {
             if (_instanceHashBuckets > 0) {
@@ -1030,8 +999,15 @@ public final class RTIDDSImpl<T> implements IMessaging {
 
     private void configureReaderQos(
             String topicName, String qosProfile, DataReaderQos drQos) {
+        // Configure ACKs
+        if (!_usePositiveAcks
+                && ("ThroughputQos".equals(qosProfile)
+                    || "LatencyQos".equals(qosProfile))) {
+            drQos.protocol.disable_positive_acks = true;
+        }
+
         // Configure reliability
-        if (!PerfTest.ANNOUNCEMENT_TOPIC_NAME.equals(topicName)) {
+        if (!ANNOUNCEMENT_TOPIC_NAME.VALUE.equals(topicName)) {
             if (_isReliable) {
                 drQos.reliability.kind = ReliabilityQosPolicyKind.RELIABLE_RELIABILITY_QOS;
             } else {
@@ -1050,18 +1026,17 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     drQos.property, "dds.data_reader.history.memory_manager.java_stream.trim_to_size",
                     "1", false);
         }
-      
+
         // These QOS's are only set for the Throughput reader
-        if ("ThroughputQos".equals(qosProfile) ||
-            "NoAckThroughputQos".equals(qosProfile)) {
+        if ("ThroughputQos".equals(qosProfile)) {
             switch(_durability){
             case 0:
                 drQos.durability.kind = DurabilityQosPolicyKind.VOLATILE_DURABILITY_QOS;
                 break;
-            case 1:                              
+            case 1:
                 drQos.durability.kind = DurabilityQosPolicyKind.TRANSIENT_LOCAL_DURABILITY_QOS;
                 break;
-            case 2:              
+            case 2:
                 drQos.durability.kind = DurabilityQosPolicyKind.TRANSIENT_DURABILITY_QOS;
                 break;
             case 3:
@@ -1072,21 +1047,23 @@ public final class RTIDDSImpl<T> implements IMessaging {
             drQos.durability.direct_communication = _directCommunication;
         }
 
-        if (("LatencyQos".equals(qosProfile) ||
-             "NoAckLatencyQos".equals(qosProfile)) &&
-            !_directCommunication &&
-            (_durability == 2 ||
-             _durability == 3)){
+        if ("LatencyQos".equals(qosProfile)
+                && !_directCommunication
+                && (_durability == DurabilityQosPolicyKind.TRANSIENT_DURABILITY_QOS.ordinal()
+                    || _durability == DurabilityQosPolicyKind.PERSISTENT_DURABILITY_QOS.ordinal())) {
 
-            if(_durability == 2){
+            if(_durability == DurabilityQosPolicyKind.TRANSIENT_DURABILITY_QOS.ordinal()){
                 drQos.durability.kind = DurabilityQosPolicyKind.TRANSIENT_DURABILITY_QOS;
             } else{
                 drQos.durability.kind = DurabilityQosPolicyKind.PERSISTENT_DURABILITY_QOS;
             }
             drQos.durability.direct_communication = _directCommunication;
         }
-           
-        drQos.resource_limits.initial_instances = _instanceCount;
+
+        drQos.resource_limits.initial_instances = _instanceCount + 1;
+        if (_instanceMaxCountReader != -1) {
+            _instanceMaxCountReader++;
+        }
         drQos.resource_limits.max_instances = _instanceMaxCountReader;
 
         if (_instanceCount > 1) {
@@ -1097,15 +1074,14 @@ public final class RTIDDSImpl<T> implements IMessaging {
             }
         }
 
-        if (!_useTcpOnly && !_useSharedMemory && _isMulticast) {
-            String multicast_addr;
-
-            if (PerfTest.THROUGHPUT_TOPIC_NAME.equals(topicName)) {
-                multicast_addr = THROUGHPUT_MULTICAST_ADDR;
-            } else if (PerfTest.LATENCY_TOPIC_NAME.equals(topicName)) {
-                multicast_addr = LATENCY_MULTICAST_ADDR;
-            } else {
-                multicast_addr = ANNOUNCEMENT_MULTICAST_ADDR;
+        if (_transport.useMulticast && _transport.allowsMulticast()) {
+            String multicast_addr = _transport.getMulticastAddr(topicName);
+            if (multicast_addr == null) {
+                System.err.println("topic name must either be "
+                        + THROUGHPUT_TOPIC_NAME.VALUE + " or "
+                        + LATENCY_TOPIC_NAME.VALUE + " or "
+                        + ANNOUNCEMENT_TOPIC_NAME.VALUE);
+                return ;
             }
 
             TransportMulticastSettings_t multicast_setting =
@@ -1123,20 +1099,113 @@ public final class RTIDDSImpl<T> implements IMessaging {
         }
     }
 
+    public String printConfiguration() {
+
+        StringBuilder sb = new StringBuilder();
+
+        // Domain ID
+        sb.append("\tDomain: ");
+        sb.append(_domainID);
+        sb.append("\n");
+
+        // Dynamic Data
+        sb.append("\tDynamic Data: ");
+        if (_isDynamicData) {
+            sb.append("Yes\n");
+        } else {
+            sb.append("No\n");
+        }
+
+        // Dynamic Data
+        if (_isPublisher) {
+            sb.append("\tAsynchronous Publishing: ");
+            if (_isLargeData || _IsAsynchronous) {
+                sb.append("Yes\n");
+                sb.append("\tFlow Controller: ");
+                sb.append(_FlowControllerCustom);
+                sb.append("\n");
+            } else {
+                sb.append("No\n");
+            }
+        }
+
+        // Turbo Mode / AutoThrottle
+        if (_TurboMode) {
+            sb.append("\tTurbo Mode: Enabled\n");
+        }
+        if (_AutoThrottle) {
+            sb.append("\tAutoThrottle: Enabled\n");
+        }
+
+        // XML File
+        sb.append("\tXML File: ");
+        sb.append(_profileFile);
+        sb.append("\n");
+
+
+        sb.append("\n");
+        sb.append(_transport.printTransportConfigurationSummary());
+
+
+        // set initial peers and not use multicast
+        if (_peer_host_count > 0) {
+            sb.append("Initial peers: ");
+            for ( int i = 0; i < _peer_host_count; ++i) {
+                sb.append(_peer_host[i]);
+                if (i == _peer_host_count - 1) {
+                    sb.append("\n");
+                } else {
+                    sb.append(", ");
+                }
+            }
+        }
+
+        if (_secureUseSecure) {
+            sb.append("\n");
+            sb.append(printSecureArgs());
+        }
+
+        return sb.toString();
+    }
+
     private boolean parseConfig(int argc, String[] argv) {
+        long minScanSize = MAX_PERFTEST_SAMPLE_SIZE.VALUE;
+        boolean isBatchSizeProvided = false;
 
         for (int i = 0; i < argc; ++i) {
 
-            if ("-scan".toLowerCase().startsWith(argv[i].toLowerCase())) 
-            {
+            if ("-scan".toLowerCase().startsWith(argv[i].toLowerCase())) {
                 _isScan = true;
+                /*
+                * Check if we have custom scan values. In such case we are just
+                * interested in the minimum one.
+                */
+                if ((i != (argc - 1)) && !argv[1+i].startsWith("-")) {
+                    ++i;
+                    long auxScan = 0;
+                    StringTokenizer st = new StringTokenizer(argv[i], ":", true);
+                    while (st.hasMoreTokens()) {
+                        String s = st.nextToken();
+                        if (!s.equals(":")) {
+                            auxScan = Long.parseLong(s);
+                            if (auxScan < minScanSize) {
+                                minScanSize = auxScan;
+                            }
+                        }
+                    }
+                /*
+                 * If we do not specify any custom value for the -scan, we would
+                 * set minScanSize to the minimum size in the default set for -scan.
+                 */
+                } else {
+                    minScanSize = 32;
+                }
             }
             else if ("-pub".toLowerCase().startsWith(argv[i].toLowerCase())) {
                 _isPublisher = true;
             }
             else if ("-dynamicData".toLowerCase().startsWith(argv[i].toLowerCase())) {
-                // Using Dynamic data, we need to check here this, since the
-                // previous place does not remove it from the list.
+                _isDynamicData = true;
             }
             else if ("-dataLen".toLowerCase().startsWith(argv[i].toLowerCase())) {
                 if ((i == (argc - 1)) || argv[++i].startsWith("-")) {
@@ -1158,17 +1227,19 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     return false;
                 }
                 if (_useUnbounded == 0 && _dataLen > MAX_BOUNDED_SEQ_SIZE.VALUE) {
-                    _useUnbounded = MAX_BOUNDED_SEQ_SIZE.VALUE;
+                    _useUnbounded = Math.min(
+                            MAX_BOUNDED_SEQ_SIZE.VALUE, 2 * _dataLen);
                 }
             }else if ("-unbounded".toLowerCase().startsWith(argv[i].toLowerCase())) {
                 if ((i == (argc - 1)) || argv[i+1].startsWith("-")) {
-                     _useUnbounded = MAX_BOUNDED_SEQ_SIZE.VALUE;
+                    _useUnbounded = Math.min(
+                            MAX_BOUNDED_SEQ_SIZE.VALUE, 2 * _dataLen);
                 } else {
                     ++i;
                     try {
                         _useUnbounded = Long.parseLong(argv[i]);
                     } catch (NumberFormatException nfx) {
-                        System.err.print("Bad managerMemory value.\n");
+                        System.err.print("Bad allocation_threshold value.\n");
                         return false;
                     }
                 }
@@ -1177,8 +1248,8 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     System.err.println("unbounded must be >= " + PerfTest.OVERHEAD_BYTES);
                     return false;
                 }
-                if (_useUnbounded > PerfTest.getMaxPerftestSampleSizeJava()) {
-                    System.err.println("unbounded must be <= " + PerfTest.getMaxPerftestSampleSizeJava());
+                if (_useUnbounded > MAX_BOUNDED_SEQ_SIZE.VALUE) {
+                    System.err.println("unbounded must be <= " + MAX_BOUNDED_SEQ_SIZE.VALUE);
                     return false;
                 }
             } else if ("-sendQueueSize".toLowerCase().startsWith(argv[i].toLowerCase())) {
@@ -1233,9 +1304,9 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     System.err.print("Bad domain id\n");
                     return false;
                 }
-            } else if ("-qosprofile".toLowerCase().startsWith(argv[i].toLowerCase())) {
+            } else if ("-qosFile".toLowerCase().startsWith(argv[i].toLowerCase())) {
                 if ((i == (argc - 1)) || argv[++i].startsWith("-")) {
-                    System.err.print("Missing filename after -qosprofile\n");
+                    System.err.print("Missing filename after -qosFile\n");
                     return false;
                 }
                 _profileFile = argv[i];
@@ -1245,24 +1316,6 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     return false;
                 }
                 PROFILE_LIBRARY_NAME = argv[i];
-            } else if ("-nomulticast".toLowerCase().startsWith(argv[i].toLowerCase())) {
-                _isMulticast = false;
-            } else if ("-multicast".toLowerCase().startsWith(argv[i].toLowerCase())) {
-                _isMulticast = true;
-            } else if ("-multicastAddress".toLowerCase().startsWith(argv[i].toLowerCase())) {
-                if ((i == (argc - 1)) || argv[++i].startsWith("-")) {
-                    System.err.print("Missing <multicast address> after -multicastAddress\n");
-                    return false;
-                }
-                THROUGHPUT_MULTICAST_ADDR = argv[i];
-                LATENCY_MULTICAST_ADDR = argv[i];
-                ANNOUNCEMENT_MULTICAST_ADDR = argv[i];
-            } else if ("-nic".toLowerCase().startsWith(argv[i].toLowerCase())) {
-                if ((i == (argc - 1)) || argv[++i].startsWith("-")) {
-                    System.err.print("Missing <address> after -nic\n");
-                    return false;
-                }
-                _nic = argv[i];
             } else if ("-bestEffort".toLowerCase().startsWith(argv[i].toLowerCase())) {
                 _isReliable = false;
             } else if ("-durability".toLowerCase().startsWith(argv[i].toLowerCase()))
@@ -1284,11 +1337,11 @@ public final class RTIDDSImpl<T> implements IMessaging {
             } else if ("-noDirectCommunication".toLowerCase().startsWith(argv[i].toLowerCase())) {
                 _directCommunication = false;
             }
-            else if ("-latencyTest".toLowerCase().startsWith(argv[i].toLowerCase())) 
+            else if ("-latencyTest".toLowerCase().startsWith(argv[i].toLowerCase()))
             {
                 _latencyTest = true;
             }
-            else if ("-instances".toLowerCase().startsWith(argv[i].toLowerCase())) 
+            else if ("-instances".toLowerCase().startsWith(argv[i].toLowerCase()))
             {
                 if ((i == (argc - 1)) || argv[++i].startsWith("-")) {
                     System.err.print("Missing <count> after -instances\n");
@@ -1305,7 +1358,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     System.err.print("instance count cannot be negative\n");
                     return false;
                 }
-            } else if ("-instanceHashBuckets".toLowerCase().startsWith(argv[i].toLowerCase())) 
+            } else if ("-instanceHashBuckets".toLowerCase().startsWith(argv[i].toLowerCase()))
             {
                 if ((i == (argc - 1)) || argv[++i].startsWith("-")) {
                     System.err.print("Missing <count> after -instanceHashBuckets\n");
@@ -1321,7 +1374,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     System.err.print("instanceHashBucket count cannot be negative or zero\n");
                     return false;
                 }
-            } else if ("-batchSize".toLowerCase().startsWith(argv[i].toLowerCase())) 
+            } else if ("-batchSize".toLowerCase().startsWith(argv[i].toLowerCase()))
             {
                 if ((i == (argc - 1)) || argv[++i].startsWith("-")) {
                     System.err.print("Missing <#bytes> after -batchSize\n");
@@ -1333,10 +1386,14 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     System.err.print("Bad #bytes for batch\n");
                     return false;
                 }
-                if (_batchSize < 0) {
-                    System.err.print("batch size cannot be negative\n");
+                if (_batchSize < 0 || _batchSize > MAX_SYNCHRONOUS_SIZE.VALUE) {
+                    System.err.print("Batch size '" + _batchSize +
+                            "' should be between [0," +
+                            MAX_SYNCHRONOUS_SIZE.VALUE +
+                            "]\n");
                     return false;
                 }
+                isBatchSizeProvided = true;
             }
             else if ("-keepDurationUsec".toLowerCase().startsWith(argv[i].toLowerCase()))
             {
@@ -1351,37 +1408,9 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     System.err.print("Bad usec for keep duration\n");
                     return false;
                 }
-                if (_keepDurationUsec < 0) {
-                    System.err.print("keep duration cannot be negative\n");
-                    return false;
-                }
             }
             else if ("-noPositiveAcks".toLowerCase().startsWith(argv[i].toLowerCase())) {
                 _usePositiveAcks = false;
-            } else if ("-enableTcp".toLowerCase().startsWith(argv[i].toLowerCase())) {
-                if (_useSharedMemory) {
-                    System.err.print("-enableSharedMemory was already set, ignoring -enableTcp\n");
-                } else if (_useUdpv6) {
-                    System.err.print("-useUdpv6 was already set, ignoring -enableTcp\n");
-                } else {
-                    _useTcpOnly = true;
-                }
-            } else if ("-enableSharedMemory".toLowerCase().startsWith(argv[i].toLowerCase())) {
-                if (_useUdpv6) {
-                    System.err.print("-useUdpv6 was already set, ignoring -enableSharedMemory\n");
-                } else if (_useTcpOnly) {
-                    System.err.print("-enableTcp was already set, ignoring -enableSharedMemory\n");
-                } else {
-                    _useSharedMemory = true;
-                }
-            } else if ("-enableUdpv6".toLowerCase().startsWith(argv[i].toLowerCase())) {
-                if (_useSharedMemory) {
-                    System.err.print("-enableSharedMemory was already set, ignoring -enableUdpv6\n");
-                } else if (_useTcpOnly) {
-                    System.err.print("-enableTcp was already set, ignoring -enableUdpv6\n");
-                } else {
-                    _useUdpv6 = true;
-                }
             } else if ("-verbosity".toLowerCase().startsWith(argv[i].toLowerCase())) {
                 try {
                     int verbosityLevel = Integer.parseInt(argv[++i]);
@@ -1444,7 +1473,6 @@ public final class RTIDDSImpl<T> implements IMessaging {
                     return false;
                 }
             } else if ("-enableAutoThrottle".toLowerCase().startsWith(argv[i].toLowerCase())) {
-                System.err.print("Auto Throttling enabled. Automatically adjusting the DataWriter\'s writing rate\n");
                 _AutoThrottle = true;
             } else if ("-enableTurboMode".toLowerCase().startsWith(argv[i].toLowerCase())) {
                 _TurboMode = true;
@@ -1548,7 +1576,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
                 if (_peer_host_count +1 < RTIPERFTEST_MAX_PEERS) {
                     _peer_host[_peer_host_count++] = argv[i];
                 } else {
-                    System.err.print("The maximun of -initial peers is " + RTIPERFTEST_MAX_PEERS + "\n");
+                    System.err.print("The maximum of -initial peers is " + RTIPERFTEST_MAX_PEERS + "\n");
                     return false;
                 }
             } else if ("-cft".toLowerCase().startsWith(argv[i].toLowerCase())) {
@@ -1574,7 +1602,14 @@ public final class RTIDDSImpl<T> implements IMessaging {
                 }
 
                 if (_CFTRange[0] > _CFTRange[1]) {
-                    System.err.print("-cft <start> value cannot be bigger than <end>");
+                    System.err.println("-cft <start> value cannot be bigger than <end>");
+                    return false;
+                }
+                if (_CFTRange[0] < 0 ||
+                        _CFTRange[0] >= MAX_CFT_VALUE.VALUE ||
+                        _CFTRange[1] < 0 ||
+                        _CFTRange[1] >= MAX_CFT_VALUE.VALUE) {
+                    System.err.println("-cft <start>:<end> values should be between [0," + MAX_CFT_VALUE.VALUE + "]");
                     return false;
                 }
             } else if ("-writeInstance".toLowerCase().startsWith(argv[i].toLowerCase())) {
@@ -1584,46 +1619,110 @@ public final class RTIDDSImpl<T> implements IMessaging {
                 }
                 _instancesToBeWritten = Integer.parseInt(argv[i]);
             } else {
-                System.err.print(argv[i] + ": not recognized\n");
+
+                Integer value = _transport.getTransportCmdLineArgs().get(argv[i]);
+                if (value != null) {
+                    // Increment the counter with the number of arguments
+                    // obtained from the map.
+                    i = i + value.intValue();
+                } else {
+                    System.err.print(argv[i] + ": not recognized\n");
+                    return false;
+                }
+            }
+        }
+
+        /* If we are using scan, we get the minimum and set it in Datalen */
+        if (_isScan) {
+            _dataLen = minScanSize;
+        }
+
+        /* Check if we need to enable Large Data. This works also for -scan */
+        if (_dataLen > Math.min(
+                MAX_SYNCHRONOUS_SIZE.VALUE,
+                MAX_BOUNDED_SEQ_SIZE.VALUE)) {
+            _isLargeData = true;
+            if (_useUnbounded == 0) {
+                _useUnbounded = MAX_BOUNDED_SEQ_SIZE.VALUE;
+            }
+        } else { /* No Large Data */
+            _isLargeData = false;
+        }
+
+        /* If we are using batching */
+        if (_batchSize > 0) {
+
+            /* We will not use batching for a latency test */
+            if (_latencyTest) {
+                if (isBatchSizeProvided) {
+                    System.err.println(
+                            "Batching cannot be used in a Latency test.");
+                    return false;
+                }
+                else {
+                    _batchSize = 0; // Disable Batching
+                }
+            }
+
+            /* Check if using asynchronous */
+            if (_IsAsynchronous) {
+                if (isBatchSizeProvided) {
+                    System.err.println(
+                            "Batching cannot be used with asynchronous writing.\n");
+                    return false;
+                }
+                else {
+                    _batchSize = 0; // Disable Batching
+                }
+            }
+
+            /*
+             * Large Data + batching cannot be set. But batching is enabled by default,
+             * so in that case, we just disabled batching, else, the customer set it up,
+             * so we explitly fail
+             */
+            if (_isLargeData) {
+                if (isBatchSizeProvided) {
+                    System.err.println(
+                            "Batching cannot be used with Large Data.");
+                    return false;
+                } else {
+                    _batchSize = -2;
+                }
+            } else if (_batchSize < _dataLen * 2) {
+                /*
+                 * We don't want to use batching if the batch size is not large
+                 * enough to contain at least two samples (in this case we avoid the
+                 * checking at the middleware level).
+                 */
+                if (isBatchSizeProvided || _isScan) {
+                    /*
+                     * Batchsize disabled. A message will be print if _batchSize < 0 in
+                     * perftest_cpp::PrintConfiguration()
+                     */
+                    _batchSize = -1;
+                }
+                else {
+                    _batchSize = 0;
+                }
+            }
+        }
+
+        if (_TurboMode) {
+            if (_IsAsynchronous) {
+                System.err.println("Turbo Mode cannot be used with asynchronous writing.");
                 return false;
             }
-        }
-
-        if (_dataLen > MAX_SYNCHRONOUS_SIZE.VALUE) {
-            if (_isScan) {
-                System.err.println("DataLen will be ignored since -scan is "
-                        + "present"); 
-
-            } else {
-                System.err.println("Large data settings enabled (-dataLen > " 
-                                    + MAX_SYNCHRONOUS_SIZE.VALUE + ").");
-                _isLargeData = true;
+            if (_isLargeData) {
+                System.err.println("Turbo Mode disabled, using large data.");
+                _TurboMode = false;
             }
-        }
-        if (_isLargeData && _batchSize>0) {
-            System.err.println("Batch cannot be enabled if using large data.");
-            return false;
-        }
-        if (_isLargeData && _TurboMode) {
-            System.err.println("Turbo Mode cannot be used with asynchronous writing. It will be ignored.");
-            _TurboMode = false;
-        }
-        /*
-         * We don't want to use batching if the sample is the same size as the batch
-         * nor if the sample is bigger (in this case we avoid the checking in the
-         * middleware).
-         */
-        if (_batchSize > 0 && _batchSize <= _dataLen) {
-            System.err.println("Batching dissabled: BatchSize (" + _batchSize
-                    + ") is equal or smaller than the sample size (" + _dataLen
-                    + ").");
-            _batchSize = 0;
         }
 
         // Manage _instancesToBeWritten
         if (_instancesToBeWritten != -1) {
-            if (_instanceCount <_instancesToBeWritten) {
-                System.err.println("Specified WriterInstances id (" + _instancesToBeWritten +
+            if (_instanceCount < _instancesToBeWritten) {
+                System.err.println("Specified '-WriteInstance' (" + _instancesToBeWritten +
                         ") invalid: Bigger than the number of instances (" + _instanceCount + ").");
                 return false;
             }
@@ -1631,7 +1730,30 @@ public final class RTIDDSImpl<T> implements IMessaging {
         if (_isPublisher && _useCft) {
             System.err.println("Content Filtered Topic is not a parameter in the publisher side.\n");
         }
+        if (_transport != null) {
+            if(!_transport.parseTransportOptions(argc, argv)) {
+                System.err.println("Failure parsing the transport options.");
+                return false;
+            }
+        } else {
+            System.err.println("_transport is not initialized");
+            return false;
+        }
+
         return true;
+    }
+
+    public String getQoSProfileName(String topicName) {
+        // get() function return null if the map contains no mapping for the key
+        if(_qoSProfileNameMap.get(topicName) == null){
+            System.err.println(
+                    "topic name must either be " +
+                    LATENCY_TOPIC_NAME.VALUE + " or " +
+                    ANNOUNCEMENT_TOPIC_NAME.VALUE  + " or " +
+                    THROUGHPUT_TOPIC_NAME.VALUE);
+            return null;
+        }
+        return _qoSProfileNameMap.get(topicName).toString();
     }
 
 }

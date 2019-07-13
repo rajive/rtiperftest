@@ -6,85 +6,81 @@
  * Subject to Eclipse Public License v1.0; see LICENSE.md for details.
  */
 
+#include <stdexcept> // This header is part of the error handling library.
 #include <string>
 #include <algorithm>
+#include <map>
 #include "MessagingIF.h"
 #include "perftestSupport.h"
-#include "ndds/ndds_cpp.h"
+#include "PerftestTransport.h"
+#include "Infrastructure_common.h"
 
-#define RTIPERFTEST_MAX_PEERS            (1024)
+#ifndef RTI_MICRO
+#include "RTIDDSLoggerDevice.h"
+#endif
+
+#ifdef RTI_CUSTOM_TYPE
+#include "CustomType.h"
+#endif
+
+#define RTIPERFTEST_MAX_PEERS 1024
+
+/* Forward declaration of perftest_cpp to avoid circular dependencies */
+class perftest_cpp;
+
+/* Class for the DDS_DynamicDataMemberId of the type of RTI Perftest*/
+class DynamicDataMembersId
+{
+private:
+    std::map<std::string, int> membersId;
+    DynamicDataMembersId();
+
+public:
+    ~DynamicDataMembersId();
+    static DynamicDataMembersId &GetInstance();
+    int at(std::string key);
+};
 
 template <typename T>
 class RTIDDSImpl : public IMessaging
 {
-  public:
+public:
 
-    RTIDDSImpl()
-    {
-        _SendQueueSize = 50;
-        _DataLen = 100;
-        _DomainID = 1;
-        _Nic = "";
-        _ProfileFile = "perftest_qos_profiles.xml";
-        _AutoThrottle = false;
-        _TurboMode = false;
-        _UseXmlQos = true;
-        _IsReliable = true;
-        _IsMulticast = false;
-        _BatchSize = 0;
-        _InstanceCount = 1;
-        _InstanceMaxCountReader = DDS_LENGTH_UNLIMITED;
-        _InstanceHashBuckets = -1;
-        _Durability = DDS_VOLATILE_DURABILITY_QOS;
-        _DirectCommunication = true;
-        _KeepDurationUsec = 1000;
-        _UsePositiveAcks = true;
-        _UseSharedMemory = false;
-        _UseUdpv6 = false;
-        _LatencyTest = false;
-        _UseTcpOnly = false;
-        _IsDebug = false;
-        _isLargeData = false;
-        _isScan = false;
-        _isPublisher = false;
-        _isDynamicData = false;
-        _IsAsynchronous = false;
-        _FlowControllerCustom = "default";
-        _useUnbounded = 0;
-        _peer_host_count = 0;
-        _useCft = false;
-        _instancesToBeWritten = -1; // By default use round-robin (-1)
-        _CFTRange[0] = 0;
-        _CFTRange[1] = 0;
-
-
+    RTIDDSImpl() :
+        _transport(),
       #ifdef RTI_SECURE_PERFTEST
-        _secureUseSecure = false;
-        _secureIsSigned = false;
-        _secureIsDataEncrypted = false;
-        _secureIsSMEncrypted = false;
-        _secureIsDiscoveryEncrypted = false;
-        _secureDebugLevel = -1;
+        _security(),
       #endif
-
-        _HeartbeatPeriod.sec = 0;
-        _HeartbeatPeriod.nanosec = 0;
-        _FastHeartbeatPeriod.sec = 0;
-        _FastHeartbeatPeriod.nanosec = 0;
-
-        THROUGHPUT_MULTICAST_ADDR = "239.255.1.1";
-        LATENCY_MULTICAST_ADDR = "239.255.1.2";
-        ANNOUNCEMENT_MULTICAST_ADDR = "239.255.1.100";
-        _ProfileLibraryName = "PerftestQosLibrary";
-
+      #ifndef RTI_MICRO
+        _loggerDevice(),
+      #endif
+        _parent(NULL)
+    {
+      #ifndef RTI_MICRO
+        _instanceMaxCountReader = DDS_LENGTH_UNLIMITED;
+      #else
+        /*
+         * For micro we want to restrict the use of memory, and since we need
+         * to set a maximum (other than DDS_LENGTH_UNLIMITED), we decided to use
+         * a default of 1. This means that for Micro, we need to specify the
+         * number of instances that will be received in the reader side.
+         */
+        _instanceMaxCountReader = 1;
+      #endif
+        _isLargeData = false;
         _factory = NULL;
         _participant = NULL;
         _subscriber = NULL;
         _publisher = NULL;
         _reader = NULL;
         _typename = T::TypeSupport::get_type_name();
-
-	_pongSemaphore = NULL;
+        _pongSemaphore = NULL;
+        _PM = NULL;
+        _qoSProfileNameMap[LATENCY_TOPIC_NAME] = std::string("LatencyQos");
+        _qoSProfileNameMap[ANNOUNCEMENT_TOPIC_NAME]
+                = std::string("AnnouncementQos");
+        _qoSProfileNameMap[THROUGHPUT_TOPIC_NAME]
+                = std::string("ThroughputQos");
     }
 
     ~RTIDDSImpl()
@@ -92,116 +88,80 @@ class RTIDDSImpl : public IMessaging
         Shutdown();
     }
 
-    void PrintCmdLineHelp();
+    bool validate_input();
 
-    bool ParseConfig(int argc, char *argv[]);
+    std::string PrintConfiguration();
 
-    bool Initialize(int argc, char *argv[]);
+    bool Initialize(ParameterManager &PM, perftest_cpp *parent);
 
     void Shutdown();
 
-    int GetBatchSize() { return _BatchSize; }
+    unsigned long GetInitializationSampleCount();
 
     IMessagingWriter *CreateWriter(const char *topic_name);
 
-    // Pass null for callback if using IMessagingSubscriber.ReceiveMessage()
-    // to get data
+    /*
+     * Pass null for callback if using IMessagingSubscriber.ReceiveMessage()
+     * to get data
+     */
     IMessagingReader *CreateReader(const char *topic_name, IMessagingCB *callback);
 
+  #ifndef RTI_MICRO
     DDSTopicDescription *CreateCft(const char *topic_name, DDSTopic *topic);
-
-
-  private:
-
-  #ifdef RTI_SECURE_PERFTEST
-    bool configureSecurePlugin(DDS_DomainParticipantQos& dpQos);
-    void printSecureArgs();
-    bool validateSecureArgs();
   #endif
 
-    int          _SendQueueSize;
-    unsigned long _DataLen;
-    int          _DomainID;
-    const char  *_Nic;
-    const char  *_ProfileFile;
-    bool         _TurboMode;
-    bool         _UseXmlQos;
-    bool         _AutoThrottle;
-    bool         _IsReliable;
-    bool         _IsMulticast;
-    int          _BatchSize;
-    int          _InstanceCount;
-    int          _InstanceMaxCountReader;
-    int          _InstanceHashBuckets;
-    int          _Durability;
-    bool         _DirectCommunication;
-    unsigned int _KeepDurationUsec;
-    bool         _UsePositiveAcks;
-    bool         _UseSharedMemory;
-    bool         _UseUdpv6;
-    bool         _LatencyTest;
-    bool         _UseTcpOnly;
-    bool         _IsDebug;
-    bool         _isLargeData;
-    bool         _isScan;
-    bool         _isPublisher;
-    bool         _isDynamicData;
-    bool         _IsAsynchronous;
-    std::string  _FlowControllerCustom;
-    unsigned long _useUnbounded;
-    int          _peer_host_count;
-    char *       _peer_host[RTIPERFTEST_MAX_PEERS];
-    bool         _useCft;
-    int          _instancesToBeWritten;
-    unsigned int _CFTRange[2];
+    bool configureDomainParticipantQos(DDS_DomainParticipantQos &qos);
 
-  #ifdef RTI_SECURE_PERFTEST
-    bool _secureUseSecure;
-    bool _secureIsSigned;
-    bool _secureIsDataEncrypted; // user data
-    bool _secureIsSMEncrypted;   // submessage
-    bool _secureIsDiscoveryEncrypted;
-    std::string _secureCertAuthorityFile;
-    std::string _secureCertificateFile;
-    std::string _securePrivateKeyFile;
-    std::string _secureGovernanceFile;
-    std::string _securePermissionsFile;
-    std::string _secureLibrary;
-    int  _secureDebugLevel;
+  #ifndef RTI_MICRO
+    /*
+     * These two functions calculate the serialization/deserialization time cost
+     * with a precision of microseconds.
+     */
 
-    static const std::string SECURE_PRIVATEKEY_FILE_PUB;
-    static const std::string SECURE_PRIVATEKEY_FILE_SUB;
-    static const std::string SECURE_CERTIFICATE_FILE_PUB;
-    static const std::string SECURE_CERTIFICATE_FILE_SUB;
-    static const std::string SECURE_CERTAUTHORITY_FILE;
-    static const std::string SECURE_PERMISION_FILE_PUB;
-    static const std::string SECURE_PERMISION_FILE_SUB;
-    static const std::string SECURE_LIBRARY_NAME;
+    static double obtain_dds_serialize_time_cost(
+            unsigned int sampleSize,
+            unsigned int iters = 1000);
+
+    static double obtain_dds_deserialize_time_cost(
+            unsigned int sampleSize,
+            unsigned int iters = 1000);
   #endif
 
-    DDS_Duration_t   _HeartbeatPeriod;
-    DDS_Duration_t   _FastHeartbeatPeriod;
+    bool supports_listener()
+    {
+        return true;
+    };
 
-    const char          *THROUGHPUT_MULTICAST_ADDR;
-    const char          *LATENCY_MULTICAST_ADDR;
-    const char          *ANNOUNCEMENT_MULTICAST_ADDR;
-    const char          *_ProfileLibraryName;
+    bool supports_discovery()
+    {
+        return true;
+    };
 
+    const std::string get_qos_profile_name(const char *topicName);
+
+private:
+    // This Mutex is used in VxWorks to synchronize when finalizing the factory
+    static PerftestMutex     *_finalizeFactoryMutex;
+
+    long                         _instanceMaxCountReader;
+    bool                         _isLargeData;
+    PerftestTransport            _transport;
+  #ifdef RTI_SECURE_PERFTEST
+    PerftestSecurity             _security;
+  #endif
     DDSDomainParticipantFactory *_factory;
     DDSDomainParticipant        *_participant;
     DDSSubscriber               *_subscriber;
     DDSPublisher                *_publisher;
     DDSDataReader               *_reader;
     const char                  *_typename;
-
-    RTIOsapiSemaphore *_pongSemaphore;
-
-  public:
-
-    static int          _WaitsetEventCount;
-    static unsigned int _WaitsetDelayUsec;
+    PerftestSemaphore           *_pongSemaphore;
+  #ifndef RTI_MICRO
+    RTIDDSLoggerDevice           _loggerDevice;
+  #endif
+    ParameterManager            *_PM;
+    perftest_cpp                *_parent;
+    std::map<std::string, std::string> _qoSProfileNameMap;
 };
 
-
 #endif // __RTIDDSIMPL_H__
-

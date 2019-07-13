@@ -4,6 +4,8 @@
 /srcC*/perftest_subscriber.*
 /srcC*/makefile_*
 /srcC*/objs
+/srcCs/bin
+/srcCs/obj
 /srcC*/*.vcxproj*
 /srcC*/*.vcproj*
 /srcC*/*.csproj
@@ -17,3 +19,27 @@
 /bin
 .cproject
 .project
+/srcIdl/customType/*
+/tmp
+.vscode
+.suo
+*.VC.db
+*.VC.opendb
+doc
+srcDoc/_build
+
+# Files copied by the build Script.
+/srcCpp/Parameter*
+/srcCpp03/Parameter*
+/srcCpp03/CpuMonitor*
+/srcCpp/CpuMonitor*
+/srcCpp/ThreadPriorities.*
+/srcCpp03/ThreadPriorities.*
+
+# Micro specific files related to code Generation
+/srcCpp/README.txt
+/srcCpp/perftestApplication.cxx
+/srcCpp/perftestApplication.h
+/srcCpp/gen/*
+/srcCpp/perftest_build
+/srcCpp/CMakeLists.txt

@@ -3,11 +3,12 @@
  * Subject to Eclipse Public License v1.0; see LICENSE.md for details.
  */
 
-using DDS;
 using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
+using DDS;
+using NDDS;
 
 namespace PerformanceTest
 {
@@ -54,89 +55,99 @@ namespace PerformanceTest
         }
 
         /*********************************************************
+         * GetInitializationSampleCount
+         */
+        public int GetInitializationSampleCount()
+        {
+            /*
+             * There is a minimum number of samples that we want to send no matter
+             * what the conditions are:
+             */
+            int initializeSampleCount = 50;
+
+            /*
+             * If we are using reliable, the maximum burst of that we can send is
+             * limited by max_send_window_size (or max samples, but we will assume
+             * this is not the case for this). In such case we should send
+             * max_send_window_size samples.
+             *
+             * If we are not using reliability this should not matter.
+             */
+            initializeSampleCount = Math.Max(
+                    initializeSampleCount,
+                    _SendQueueSize);
+
+            /*
+             * If we are using batching we need to take into account tha the Send
+             * Queue will be per-batch, therefore for the number of samples:
+             */
+            if (_BatchSize > 0)
+            {
+                initializeSampleCount = Math.Max(
+                        _SendQueueSize * (_BatchSize / (int)_DataLen),
+                        initializeSampleCount);
+            }
+
+            return initializeSampleCount;
+        }
+
+        /*********************************************************
          * PrintCmdLineHelp
          */
         public void PrintCmdLineHelp()
         {
             string usage_string =
-                /**************************************************************************/
-            "\t-sendQueueSize <number> - Sets number of samples (or batches) in send\n" +
-            "\t                          queue, default 50\n" +
-            "\t-domain <ID>            - RTI DDS Domain, default 1\n      " +
-            "\t-qosprofile <filename>  - Name of XML file for DDS Qos profiles,\n" +
-            "\t                          default: perftest_qos_profiles.xml\n" +
-            "\t-qosLibrary <lib name>  - Name of QoS Library for DDS Qos profiles, \n" +
-            "\t                          default: PerftestQosLibrary\n" +
-            "\t-nic <ipaddr>           - Use only the nic specified by <ipaddr>,\n" +
-            "\t                          If unspecificed, use all available interfaces\n" +
-            "\t-multicast              - Use multicast to send data, default not to\n" +
-            "\t                          use multicast\n" +
-            "\t-nomulticast            - Do not use multicast to send data (default)\n" +
-            "\t-multicastAddress <ipaddr> - Multicast address to use for receiving\n" +
-            "\t                          latency/announcement (pub) or \n" +
-            "\t                          throughtput (sub) data.\n" +
-            "\t                          If unspecified: latency 239.255.1.2,\n" +
-            "\t                          announcement 239.255.1.100,\n" +
-            "\t                          throughput 239.255.1.1\n" +
-            "\t-bestEffort             - Run test in best effort mode,\n" +
-            "\t                          default reliable\n" +
-            "\t-batchSize <bytes>      - Size in bytes of batched message, default 0\n" +
-            "\t                          (no batching)\n" +
-            "\t-noPositiveAcks         - Disable use of positive acks in reliable\n" +
-            "\t                          protocol, default use positive acks\n" +
-            "\t-keepDurationUsec <usec> - Minimum time (us) to keep samples when\n" +
-            "\t                          positive acks are disabled, default 1000 us\n" +
-            "\t-enableSharedMemory     - Enable use of shared memory transport and,\n" +
-            "\t                          disable all the other transports, default\n" +
-            "\t                          shared memory not enabled\n" +
-            "\t-enableUdpv6            - Enable use of the Udpv6 transport and \n" +
-            "\t                          disable all the other transports, default\n" +
-            "\t                          udpv6 not enabled\n" +
-            "\t-enableTcp              - Enable use of tcp transport and disable all\n" +
-            "\t                          the other transports, default do not use\n" +
-            "\t                          tcp transport\n" +
-            "\t-heartbeatPeriod <sec>:<nanosec>     - Sets the regular heartbeat\n" +
-            "\t                          period for throughput DataWriter,\n" +
-            "\t                          default 0:0 (use XML QoS Profile value)\n" +
-            "\t-fastHeartbeatPeriod <sec>:<nanosec> - Sets the fast heartbeat period\n" +
-            "\t                          for the throughput DataWriter,\n" +
-            "\t                          default 0:0 (use XML QoS Profile value)\n" +
-            "\t-dynamicData            - Makes use of the Dynamic Data APIs instead\n" +
-            "\t                          of using the generated types.\n" +
-            "\t-durability <0|1|2|3>   - Set durability QOS,\n" +
-            "\t                          0 - volatile, 1 - transient local,\n" +
-            "\t                          2 - transient, 3 - persistent, default 0\n" +
-            "\t-noDirectCommunication  - Use brokered mode for persistent durability\n" +
-            "\t-instanceHashBuckets <#count> - Number of hash buckets for instances.\n" +
-            "\t                          If unspecified, same as number of\n" +
-            "\t                          instances\n" +
-            "\t-waitsetDelayUsec <usec>   - UseReadThread related. Allows you to\n" +
-            "\t                          process incoming data in groups, based on the\n" +
-            "\t                          time rather than individually. It can be used\n" +
-            "\t                          combined with -waitsetEventCount,\n" +
-            "\t                          default 100 usec\n" +
-            "\t-waitsetEventCount <count> - UseReadThread related. Allows you to\n" +
-            "\t                          process incoming data in groups, based on the\n" +
-            "\t                          number of samples rather than individually.\n" +
-            "\t                          It can be used combined with\n" +
-            "\t                          -waitsetDelayUsec, default 5\n" +
-            "\t-enableAutoThrottle     - Enables the AutoThrottling feature in the\n" +
-            "\t                          throughput DataWriter (pub)\n" +
-            "\t-enableTurboMode        - Enables the TurboMode feature in the\n" +
-            "\t                          throughput DataWriter (pub)\n" +
-            "\t-asynchronous           - Use asynchronous writer\n" +
-            "\t                          Default: Not set\n" +
-            "\t-flowController <flow>  - In the case asynchronous writer use a specific flow controller.\n" +
-            "\t                          There are several flow controller predefined:\n" +
-            "\t                          ";
+            "\t-sendQueueSize <number>       - Sets number of samples (or batches) in send\n" +
+            "\t                                queue, default 50\n" +
+            "\t-domain <ID>                  - RTI DDS Domain, default 1\n" +
+            "\t-qosFile <filename>           - Name of XML file for DDS Qos profiles,\n" +
+            "\t                                default: perftest_qos_profiles.xml\n" +
+            "\t-qosLibrary <lib name>        - Name of QoS Library for DDS Qos profiles, \n" +
+            "\t                                default: PerftestQosLibrary\n" +
+            "\t-bestEffort                   - Run test in best effort mode, default reliable\n" +
+            "\t-batchSize <bytes>            - Size in bytes of batched message, default 8kB\n" +
+            "\t                                (Disabled for LatencyTest mode or if dataLen > 4kB)\n" +
+            "\t-noPositiveAcks               - Disable use of positive acks in reliable \n" +
+            "\t                                protocol, default use positive acks\n" +
+            "\t-keepDurationUsec <usec>      - Minimum time (us) to keep samples when\n" +
+            "\t                                positive acks are disabled, default 1000 us\n" +
+            "\t-durability <0|1|2|3>         - Set durability QOS, 0 - volatile,\n" +
+            "\t                                1 - transient local, 2 - transient, \n" +
+            "\t                                3 - persistent, default 0\n" +
+            "\t-dynamicData                  - Makes use of the Dynamic Data APIs instead\n" +
+            "\t                                of using the generated types.\n" +
+            "\t-noDirectCommunication        - Use brokered mode for persistent durability\n" +
+            "\t-waitsetDelayUsec <usec>      - UseReadThread related. Allows you to\n" +
+            "\t                                process incoming data in groups, based on the\n" +
+            "\t                                time rather than individually. It can be used\n" +
+            "\t                                combined with -waitsetEventCount,\n" +
+            "\t                                default 100 usec\n" +
+            "\t-waitsetEventCount <count>    - UseReadThread related. Allows you to\n" +
+            "\t                                process incoming data in groups, based on the\n" +
+            "\t                                number of samples rather than individually. It\n" +
+            "\t                                can be used combined with -waitsetDelayUsec,\n" +
+            "\t                                default 5\n" +
+            "\t-enableAutoThrottle           - Enables the AutoThrottling feature in the\n" +
+            "\t                                throughput DataWriter (pub)\n" +
+            "\t-enableTurboMode              - Enables the TurboMode feature in the\n" +
+            "\t                                throughput DataWriter (pub)\n" +
+            "\t-asynchronous                 - Use asynchronous writer\n" +
+            "\t                                Default: Not set\n" +
+            "\t-flowController <flow>        - In the case asynchronous writer use a specific flow controller.\n" +
+            "\t                                There are several flow controller predefined:\n" +
+            "\t                                ";
             foreach (string flow in valid_flow_controller)
             {
-                usage_string += flow + "  ";
+                usage_string += "\"" + flow + "\" ";
             }
-            usage_string += "\n\t                          Default: set default\n" +
-            "\t                          Default: set default\n" +
-            "\t-peer <address>          - Adds a peer to the peer host address list.\n" +
-            "\t                          This argument may be repeated to indicate multiple peers\n" +
+            usage_string += "\n" +
+            "\t                                Default: \"default\" (If using asynchronous).\n" +
+            "\t-peer <address>               - Adds a peer to the peer host address list.\n" +
+            "\t                                This argument may be repeated to indicate multiple peers\n" +
+            "\n";
+            usage_string += _transport.HelpMessageString();
+            usage_string += "\n" +
+            "\t======================= SECURE Specific Options =======================\n\n" +
             "\t-secureEncryptDiscovery       - Encrypt discovery traffic\n" +
             "\t-secureSign                   - Sign (HMAC) discovery and user data\n" +
             "\t-secureEncryptData            - Encrypt topic (user) data\n" +
@@ -158,19 +169,142 @@ namespace PerformanceTest
         }
 
         /*********************************************************
+         * PrintConfiguration
+         */
+        public string PrintConfiguration()
+        {
+            StringBuilder sb = new StringBuilder();
+
+            // Domain ID
+            sb.Append("\tDomain: ");
+            sb.Append(_DomainID);
+            sb.Append("\n");
+
+            // Dynamic Data
+            sb.Append("\tDynamic Data: ");
+            if (_isDynamicData)
+            {
+                sb.Append("Yes\n");
+            }
+            else
+            {
+                sb.Append("No\n");
+            }
+
+            // Dynamic Data
+            if (_isPublisher)
+            {
+                sb.Append("\tAsynchronous Publishing: ");
+                if (_isLargeData || _IsAsynchronous)
+                {
+                    sb.Append("Yes\n");
+                    sb.Append("\tFlow Controller: ");
+                    sb.Append(_FlowControllerCustom);
+                    sb.Append("\n");
+                }
+                else
+                {
+                    sb.Append("No\n");
+                }
+            }
+
+            // Turbo Mode / AutoThrottle
+            if (_TurboMode)
+            {
+                sb.Append("\tTurbo Mode: Enabled\n");
+            }
+            if (_AutoThrottle)
+            {
+                sb.Append("\tAutoThrottle: Enabled\n");
+            }
+
+            // XML File
+            sb.Append("\tXML File: ");
+            sb.Append(_ProfileFile);
+            sb.Append("\n");
+
+
+            sb.Append("\n");
+            sb.Append(_transport.PrintTransportConfigurationSummary());
+
+
+            // set initial peers and not use multicast
+            if (_peer_host_count > 0)
+            {
+                sb.Append("Initial peers: ");
+                for (int i = 0; i < _peer_host_count; ++i)
+                {
+                    sb.Append(_peer_host[i]);
+                    if (i == _peer_host_count - 1)
+                    {
+                        sb.Append("\n");
+                    }
+                    else
+                    {
+                        sb.Append(", ");
+                    }
+                }
+            }
+
+            if (_secureUseSecure)
+            {
+                sb.Append("\n");
+                sb.Append(PrintSecureArgs());
+            }
+
+            return sb.ToString();
+        }
+
+        /*********************************************************
          * ParseConfig
          */
         bool ParseConfig(int argc, string[] argv)
         {
+            ulong minScanSize = (ulong) MAX_PERFTEST_SAMPLE_SIZE.VALUE;
+            bool isBatchSizeProvided = false;
+
             for (int i = 0; i < argc; ++i)
             {
                 if ("-pub".StartsWith(argv[i], true, null))
                 {
                     _isPublisher = true;
                 }
+                else if ("-sub".StartsWith(argv[i], true, null))
+                {
+                    _isPublisher = false;
+                }
+                else if ("-dynamicData".StartsWith(argv[i], true, null))
+                {
+                    _isDynamicData = true;
+                }
                 else if ("-scan".StartsWith(argv[i], true, null))
                 {
                     _isScan = true;
+                    /*
+                    * Check if we have custom scan values. In such case we are just
+                    * interested in the minimum one.
+                    */
+                    if ((i != (argc - 1)) && !argv[1+i].StartsWith("-")) {
+                        ++i;
+                        ulong auxScan = 0;
+                        String[] listScan = argv[i].Split(':');
+                        for (int j = 0; j < listScan.Length; j++) {
+                            if (!UInt64.TryParse(listScan[j], out auxScan)) {
+                                Console.Error.Write(
+                                        "-scan <size> value must have the format '-scan <size1>:<size2>:...:<sizeN>'\n");
+                                return false;
+                            }
+                            if (auxScan < minScanSize) {
+                                minScanSize = auxScan;
+                            }
+                        }
+                    /*
+                     * If we do not specify any custom value for the -scan, we would
+                     * set minScanSize to the minimum size in the default set for -scan.
+                     */
+                    } else {
+                        minScanSize = 32;
+                    }
                 } else if ("-dataLen".StartsWith(argv[i], true, null))
                 {
                     if ((i == (argc - 1)) || argv[++i].StartsWith("-"))
@@ -194,7 +328,9 @@ namespace PerformanceTest
                         return false;
                     }
                     if (_useUnbounded == 0 && (int)_DataLen > MAX_BOUNDED_SEQ_SIZE.VALUE) {
-                        _useUnbounded = (ulong)MAX_BOUNDED_SEQ_SIZE.VALUE;
+                        _useUnbounded = Math.Min(
+                                (ulong)MAX_BOUNDED_SEQ_SIZE.VALUE,
+                                2 * _DataLen);
                     }
                 }
                 else if ("-unbounded".StartsWith(argv[i], true, null))
@@ -202,12 +338,14 @@ namespace PerformanceTest
 
                     if ((i == (argc - 1)) || argv[i+1].StartsWith("-"))
                     {
-                        _useUnbounded = (ulong)MAX_BOUNDED_SEQ_SIZE.VALUE;
+                        _useUnbounded = Math.Min(
+                                (ulong)MAX_BOUNDED_SEQ_SIZE.VALUE,
+                                2 * _DataLen);
                     } else {
                         ++i;
                         if (!UInt64.TryParse(argv[i], out _useUnbounded))
                         {
-                            Console.Error.Write("Bad managerMemory value\n");
+                            Console.Error.Write("Bad allocation_threshold value\n");
                             return false;
                         }
                     }
@@ -217,9 +355,10 @@ namespace PerformanceTest
                         Console.Error.WriteLine("_useUnbounded must be >= " + perftest_cs.OVERHEAD_BYTES);
                         return false;
                     }
-                    if (_useUnbounded > perftest_cs.getMaxPerftestSampleSizeCS())
+                    if (_useUnbounded > (ulong)MAX_BOUNDED_SEQ_SIZE.VALUE)
                     {
-                        Console.Error.WriteLine("_useUnbounded must be <= " + perftest_cs.getMaxPerftestSampleSizeCS());
+                        Console.Error.WriteLine("_useUnbounded must be <= " +
+                                MAX_BOUNDED_SEQ_SIZE.VALUE);
                         return false;
                     }
                 }
@@ -285,11 +424,11 @@ namespace PerformanceTest
                         return false;
                     }
                 }
-                else if ("-qosprofile".StartsWith(argv[i], true, null))
+                else if ("-qosFile".StartsWith(argv[i], true, null))
                 {
                     if ((i == (argc - 1)) || argv[++i].StartsWith("-"))
                     {
-                        Console.Error.Write("Missing filename after -qosprofile\n");
+                        Console.Error.Write("Missing filename after -qosFile\n");
                         return false;
                     }
                     _ProfileFile = argv[i];
@@ -298,38 +437,10 @@ namespace PerformanceTest
                 {
                     if ((i == (argc - 1)) || argv[++i].StartsWith("-"))
                     {
-                        Console.Error.Write("Missing library name after -qosLibrary\n");
+                        Console.Error.WriteLine("Missing library name after -qosLibrary");
                         return false;
                     }
                     _ProfileLibraryName = argv[i];
-                }
-                else if ("-multicast".StartsWith(argv[i], true, null))
-                {
-                    _IsMulticast = true;
-                }
-                else if ("-nomulticast".StartsWith(argv[i], true, null))
-                {
-                    _IsMulticast = false;
-                }
-                else if ("-multicastAddress".StartsWith(argv[i], true, null))
-                {
-                    if ((i == (argc - 1)) || argv[++i].StartsWith("-"))
-                    {
-                        Console.Error.Write("Missing <multicast address> after -multicastAddress\n");
-                        return false;
-                    }
-                    THROUGHPUT_MULTICAST_ADDR = argv[i];
-                    LATENCY_MULTICAST_ADDR = argv[i];
-                    ANNOUNCEMENT_MULTICAST_ADDR = argv[i];
-                }
-                else if ("-nic".StartsWith(argv[i], true, null))
-                {
-                    if ((i == (argc - 1)) || argv[++i].StartsWith("-"))
-                    {
-                        Console.Error.Write("Missing <address> after -nic\n");
-                        return false;
-                    }
-                    _Nic = argv[i];
                 }
                 else if ("-bestEffort".StartsWith(argv[i], true, null))
                 {
@@ -407,11 +518,15 @@ namespace PerformanceTest
                         Console.Error.Write("Bad #bytes for batch\n");
                         return false;
                     }
-                    if (_BatchSize < 0)
+                    if (_BatchSize < 0 || _BatchSize > MAX_SYNCHRONOUS_SIZE.VALUE)
                     {
-                        Console.Error.Write("batch size cannot be negative\n");
+                        Console.Error.Write("Batch size '" + _BatchSize +
+                                "' should be between [0," +
+                                MAX_SYNCHRONOUS_SIZE.VALUE +
+                                "]\n");
                         return false;
                     }
+                    isBatchSizeProvided = true;
                 }
                 else if ("-keepDurationUsec".StartsWith(argv[i], true, null))
                 {
@@ -420,47 +535,15 @@ namespace PerformanceTest
                         Console.Error.Write("Missing <usec> after -keepDurationUsec\n");
                         return false;
                     }
-                    if (!UInt32.TryParse(argv[i], out _KeepDurationUsec))
+                    if (!Int64.TryParse(argv[i], out _KeepDurationUsec))
                     {
                         Console.Error.Write("Bad usec for keep duration\n");
-                        return false;
-                    }
-                    if (_KeepDurationUsec < 0)
-                    {
-                        Console.Error.Write(" keep duration usec cannot be negative or null\n");
                         return false;
                     }
                 }
                 else if ("-noPositiveAcks".StartsWith(argv[i], true, null))
                 {
                     _UsePositiveAcks = false;
-                }
-                else if ("-enableSharedMemory".StartsWith(argv[i], true, null)) {
-                    if (_UseUdpv6) {
-                        Console.Error.Write("-useUdpv6 was already set, ignoring -enableSharedMemory\n");
-                    } else if (_UseTcpOnly) {
-                        Console.Error.Write("-enableTcp was already set, ignoring -enableSharedMemory\n");
-                    } else {
-                        _UseSharedMemory = true;
-                    }
-                }
-                else if ("-enableUdpv6".StartsWith(argv[i], true, null)) {
-                    if (_UseSharedMemory) {
-                        Console.Error.Write("-enableSharedMemory was already set, ignoring -enableUdpv6\n");
-                    } else if (_UseTcpOnly) {
-                        Console.Error.Write("-enableTcp was already set, ignoring -enableUdpv6\n");
-                    } else {
-                        _UseUdpv6 = true;
-                    }
-                }
-                else if ("-enableTcp".StartsWith(argv[i], true, null)) {
-                    if (_UseSharedMemory) {
-                        Console.Error.Write("-enableSharedMemory was already set, ignoring -enableTcp\n");
-                    } else if (_UseUdpv6) {
-                        Console.Error.Write("-useUdpv6 was already set, ignoring -enableTcp\n");
-                    } else {
-                        _UseTcpOnly = true;
-                    }
                 }
                 else if ("-verbosity".StartsWith(argv[i], true, null))
                 {
@@ -536,7 +619,6 @@ namespace PerformanceTest
                 }
                 else if ("-enableAutoThrottle".StartsWith(argv[i], true, null))
                 {
-                    Console.Error.Write("Auto Throttling enabled. Automatically adjusting the DataWriter\'s writing rate\n");
                     _AutoThrottle = true;
                 }
                 else if ("-enableTurboMode".StartsWith(argv[i], true, null))
@@ -680,7 +762,7 @@ namespace PerformanceTest
                     if (_peer_host_count +1 < RTIPERFTEST_MAX_PEERS) {
                         _peer_host[_peer_host_count++] = argv[i];
                     } else {
-                        Console.Error.Write("The maximun of -initial peers is " + RTIPERFTEST_MAX_PEERS + "\n");
+                        Console.Error.Write("The maximum of -initial peers is " + RTIPERFTEST_MAX_PEERS + "\n");
                         return false;
                     }
                 } else if ("-cft".StartsWith(argv[i], true, null)) {
@@ -722,8 +804,17 @@ namespace PerformanceTest
                         Console.Error.Write("-cft <start> value cannot be bigger than <end>\n");
                         return false;
                     }
-                } else if ("-writeInstance".StartsWith(argv[i], true, null)) {
-                    if ((i == (argc - 1)) || argv[++i].StartsWith("-")) {
+                    if (_CFTRange[0] < 0 ||
+                            _CFTRange[0] >= MAX_CFT_VALUE.VALUE ||
+                            _CFTRange[1] < 0 ||
+                            _CFTRange[1] >= MAX_CFT_VALUE.VALUE) {
+                        Console.Error.Write("-cft <start>:<end> values should be between [0," + MAX_CFT_VALUE.VALUE + "]\n");
+                        return false;
+                    }
+                } else if ("-writeInstance".StartsWith(argv[i], true, null))
+                {
+                    if ((i == (argc - 1)) || argv[++i].StartsWith("-"))
+                    {
                         Console.Error.Write("Missing <number> after -writeInstance\n");
                         return false;
                     }
@@ -732,50 +823,113 @@ namespace PerformanceTest
                         Console.Error.Write("Bad <start> for  -cft\n");
                         return false;
                     }
-                } else {
-                    Console.Error.Write(argv[i] + ": not recognized\n");
-                    return false;
-                }
-            }
-
-            if ((int)_DataLen > MAX_SYNCHRONOUS_SIZE.VALUE)
-            {
-                if (_isScan)
-                {
-                    Console.Error.WriteLine("DataLen will be ignored since -scan is present.");
                 }
                 else
                 {
-                    Console.Error.WriteLine("Large data settings enabled (-dataLen < " + MAX_SYNCHRONOUS_SIZE.VALUE + ").");
-                    _isLargeData = true;
+                    try
+                    {
+                        int value = PerftestTransport.GetTransportCmdLineArgs()[argv[i]];
+                        // Increment the counter with the number of arguments
+                        // obtained from the map.
+                        i = i + value;
+                    }
+                    catch (KeyNotFoundException)
+                    {
+                        Console.Error.Write(argv[i] + ": not recognized\n");
+                        return false;
+                    }
                 }
             }
-            if (_isLargeData && _BatchSize > 0)
-            {
-                Console.Error.WriteLine("Batch cannot be enabled if using large data");
-                return false;
+
+            /* If we are using scan, we get the minimum and set it in Datalen */
+            if (_isScan) {
+                _DataLen = minScanSize;
             }
-            if (_isLargeData && _TurboMode)
-            {
-                Console.Error.WriteLine("Turbo Mode cannot be used with asynchronous writing. It will be ignored.");
-                _TurboMode = false;
+
+            /* Check if we need to enable Large Data. This works also for -scan */
+            if (_DataLen > (ulong) Math.Min(
+                        MAX_SYNCHRONOUS_SIZE.VALUE,
+                        MAX_BOUNDED_SEQ_SIZE.VALUE)) {
+                _isLargeData = true;
+                if (_useUnbounded == 0) {
+                    _useUnbounded = (ulong) MAX_BOUNDED_SEQ_SIZE.VALUE;
+                }
+            } else { /* No Large Data */
+                _isLargeData = false;
             }
-            /*
-             * We don't want to use batching if the sample is the same size as the batch
-             * nor if the sample is bigger (in this case we avoid the checking in the
-             * middleware).
-             */
-            if (_BatchSize > 0 && _BatchSize <= (int)_DataLen)
-            {
-                Console.Error.WriteLine("Batching dissabled: BatchSize (" + _BatchSize
-                        + ") is equal or smaller than the sample size (" + _DataLen
-                        + ").");
-                _BatchSize = 0;
+
+            /* If we are using batching */
+            if (_BatchSize > 0) {
+
+                /* We will not use batching for a latency test */
+                if (_LatencyTest) {
+                    if (isBatchSizeProvided) {
+                        Console.Error.WriteLine(
+                                "Batching cannot be used in a Latency test.");
+                        return false;
+                    } else {
+                        _BatchSize = 0; //Disable Batching
+                    }
+                }
+
+                /* Check if using asynchronous */
+                if (_IsAsynchronous) {
+                    if (isBatchSizeProvided) {
+                        Console.Error.WriteLine(
+                                "Batching cannot be used with asynchronous writing.\n");
+                        return false;
+                    } else {
+                        _BatchSize = 0; //Disable Batching
+                    }
+                }
+
+                /*
+                 * Large Data + batching cannot be set. But batching is enabled by default,
+                 * so in that case, we just disabled batching, else, the customer set it up,
+                 * so we explitly fail
+                 */
+                if (_isLargeData) {
+                    if (isBatchSizeProvided) {
+                        Console.Error.WriteLine(
+                                "Batching cannot be used with Large Data.");
+                        return false;
+                    } else {
+                        _BatchSize = -2;
+                    }
+                } else if ((ulong) _BatchSize < _DataLen * 2) {
+                    /*
+                     * We don't want to use batching if the batch size is not large
+                     * enough to contain at least two samples (in this case we avoid the
+                     * checking at the middleware level).
+                     */
+                    if (isBatchSizeProvided || _isScan) {
+                        /*
+                        * Batchsize disabled. A message will be print if _batchsize < 0 in
+                        * perftest_cpp::PrintConfiguration()
+                        */
+                        _BatchSize = -1;
+                    }
+                    else {
+                        _BatchSize = 0;
+                    }
+                }
             }
+
+            if (_TurboMode) {
+                if (_IsAsynchronous) {
+                    Console.Error.WriteLine("Turbo Mode cannot be used with asynchronous writing.");
+                    return false;
+                }
+                if (_isLargeData) {
+                    Console.Error.WriteLine("Turbo Mode disabled, using large data.");
+                    _TurboMode = false;
+                }
+            }
+
             // Manage _instancesToBeWritten
             if (_instancesToBeWritten != -1) {
-                if (_InstanceCount <_instancesToBeWritten) {
-                    Console.Error.WriteLine("Specified WriterInstances id (" + _instancesToBeWritten +
+                if (_InstanceCount < _instancesToBeWritten) {
+                    Console.Error.WriteLine("Specified '-WriteInstance' (" + _instancesToBeWritten +
                             ") invalid: Bigger than the number of instances (" + _InstanceCount + ").");
                     return false;
                 }
@@ -783,6 +937,21 @@ namespace PerformanceTest
             if (_isPublisher && _useCft) {
                 Console.Error.WriteLine("Content Filtered Topic is not a parameter in the publisher side.\n");
             }
+
+            if (_transport != null)
+            {
+                if (!_transport.ParseTransportOptions(argv))
+                {
+                    Console.Error.WriteLine("Failure parsing the transport options.");
+                    return false;
+                }
+            }
+            else
+            {
+                Console.Error.WriteLine("_transport is not initialized");
+                return false;
+            }
+
             return true;
         }
 
@@ -831,6 +1000,7 @@ namespace PerformanceTest
             protected InstanceHandle_t[] _instance_handles;
             protected Semaphore _pongSemaphore = null;
             protected int _instancesToBeWritten = -1;
+            protected bool _isReliable = false;
 
             public RTIPublisher(
                     DataWriter writer,
@@ -844,7 +1014,7 @@ namespace PerformanceTest
 
                 _num_instances = num_instances;
                 _instance_counter = 0;
-                _instance_handles = new DDS.InstanceHandle_t[num_instances];
+                _instance_handles = new DDS.InstanceHandle_t[_num_instances + 1]; // One extra for MAX_CFT_VALUE
                 _pongSemaphore = pongSemaphore;
                 _instancesToBeWritten = instancesToBeWritten;
 
@@ -856,7 +1026,15 @@ namespace PerformanceTest
                     _instance_handles[i] = writer.register_instance_untyped(
                             _DataType.getData());
                 }
+                // Register the key of MAX_CFT_VALUE
+                _DataType.fillKey(MAX_CFT_VALUE.VALUE);
+                _instance_handles[_num_instances] = writer.register_instance_untyped(
+                        _DataType.getData());
 
+                DDS.DataWriterQos dw_qos = new DDS.DataWriterQos();
+                _writer.get_qos(dw_qos);
+                _isReliable = (dw_qos.reliability.kind 
+                                == DDS.ReliabilityQosPolicyKind.RELIABLE_RELIABILITY_QOS);
             }
 
             public void Flush()
@@ -864,23 +1042,31 @@ namespace PerformanceTest
                 _writer.flush();
             }
 
-            public virtual bool Send(TestMessage message)
+            public virtual bool Send(TestMessage message, bool isCftWildCardKey)
             {
                 int key = 0;
                 _DataType.copyFromMessage(message);
 
-                if (_num_instances > 1) {
-                    if (_instancesToBeWritten == -1) {
-                        key = (int) (_instance_counter++ % _num_instances);
-                    } else {
-                        key = _instancesToBeWritten;
+                if (!isCftWildCardKey) {
+                    if (_num_instances > 1) {
+                        if (_instancesToBeWritten == -1) {
+                            key = (int) (_instance_counter++ % _num_instances);
+                        } else {
+                            key = _instancesToBeWritten;
+                        }
                     }
-                    _DataType.fillKey(key);
+                } else {
+                    key = MAX_CFT_VALUE.VALUE;
                 }
+                _DataType.fillKey(key);
 
                 try
                 {
-                    _writer.write_untyped(_DataType.getData(), ref _instance_handles[key]);
+                    if (!isCftWildCardKey) {
+                        _writer.write_untyped(_DataType.getData(), ref _instance_handles[key]);
+                    } else {
+                        _writer.write_untyped(_DataType.getData(), ref _instance_handles[_num_instances]);
+                    }
                 }
                 catch (DDS.Exception ex)
                 {
@@ -961,10 +1147,18 @@ namespace PerformanceTest
                 return status.pulled_sample_count;
             }
 
-            public void resetWriteInstance(){
-                _instancesToBeWritten = -1;
+            public void waitForAck(int sec, uint nsec) {
+                if (_isReliable) {
+                    try {
+                        Duration_t duration = new Duration_t();
+                        duration.sec = sec;
+                        duration.nanosec = nsec;
+                        _writer.wait_for_acknowledgments(duration);
+                    } catch (DDS.Retcode_Timeout) {} // Expected exception
+                } else {
+                    System.Threading.Thread.Sleep((int)nsec / 1000000);
+                }
             }
-
         }
 
         /*********************************************************
@@ -981,25 +1175,34 @@ namespace PerformanceTest
                 : base(writer, num_instances, pongSemaphore, DataType, instancesToBeWritten) {}
 
 
-            public override bool Send(TestMessage message)
+            public override bool Send(TestMessage message, bool isCftWildCardKey)
             {
                 int key = 0;
                 _DataType.copyFromMessage(message);
+                if (!isCftWildCardKey) {
+                    if (_num_instances > 1) {
+                        if (_instancesToBeWritten == -1) {
+                            key = (int) (_instance_counter++ % _num_instances);
+                        } else {
+                            key = _instancesToBeWritten;
+                        }
 
-                if (_num_instances > 1) {
-                    if (_instancesToBeWritten == -1) {
-                        key = (int) (_instance_counter++ % _num_instances);
-                    } else {
-                        key = _instancesToBeWritten;
                     }
-                    _DataType.fillKey(key);
+                } else {
+                    key = MAX_CFT_VALUE.VALUE;
                 }
-
+                _DataType.fillKey(key);
                 try
                 {
-                    ((DynamicDataWriter)_writer).write(
-                            (DynamicData)_DataType.getData(),
-                            ref _instance_handles[key]);
+                    if (!isCftWildCardKey) {
+                        ((DynamicDataWriter)_writer).write(
+                                (DynamicData)_DataType.getData(),
+                                ref _instance_handles[key]);
+                    } else {
+                        ((DynamicDataWriter)_writer).write(
+                                (DynamicData)_DataType.getData(),
+                                ref _instance_handles[_num_instances]);
+                    }
                 }
                 catch (DDS.Exception ex)
                 {
@@ -1224,6 +1427,11 @@ namespace PerformanceTest
         public RTIDDSImpl(ITypeHelper<T> myDataTypeHelper)
         {
             _DataTypeHelper = myDataTypeHelper;
+            _transport = new PerftestTransport();
+
+            _qoSProfileNameMap.Add(LATENCY_TOPIC_NAME.VALUE, "LatencyQos");
+            _qoSProfileNameMap.Add(ANNOUNCEMENT_TOPIC_NAME.VALUE, "AnnouncementQos");
+            _qoSProfileNameMap.Add(THROUGHPUT_TOPIC_NAME.VALUE, "ThroughputQos");
         }
 
         /*********************************************************
@@ -1280,7 +1488,7 @@ namespace PerformanceTest
             }
 
             // Configure DDSDomainParticipant QOS
-            _factory.get_participant_qos_from_profile(qos, _ProfileLibraryName, "TransportQos");
+            _factory.get_participant_qos_from_profile(qos, _ProfileLibraryName, "BaseProfileQos");
 
             if (_secureUseSecure) {
                 // validate arguments
@@ -1292,48 +1500,17 @@ namespace PerformanceTest
             }
 
             // set initial peers and not use multicast
-            if ( _peer_host_count > 0 ) {
-                Console.Error.Write("Initial peers: ");
-                for ( int i =0; i< _peer_host_count; ++i) {
-                    Console.Error.Write(_peer_host[i]+" ");
-                }
-                Console.Error.Write("\n");
+            if (_peer_host_count > 0) {
+                qos.discovery.initial_peers.ensure_length(_peer_host_count, _peer_host_count);
                 qos.discovery.initial_peers.from_array(_peer_host);
-                qos.discovery.multicast_receive_addresses = new  DDS.StringSeq();
+                qos.discovery.multicast_receive_addresses = new DDS.StringSeq();
             }
 
-            // set transports to use
-            qos.transport_builtin.mask = (int)DDS.TransportBuiltinKind.TRANSPORTBUILTIN_UDPv4;
-            if (_UseTcpOnly)
+            if (!_transport.ConfigureTransport(qos))
             {
-                qos.transport_builtin.mask = (int)DDS.TransportBuiltinKindMask.TRANSPORTBUILTIN_MASK_NONE;
-                try
-                {
-                    DDS.PropertyQosPolicyHelper.add_property(qos.property_qos,
-                                             "dds.transport.load_plugins",
-                                             "dds.transport.TCPv4.tcp1",
-                                             false);
-                }
-                catch (DDS.Exception e)
-                {
-                    Console.Error.WriteLine("! unable to set property dds.transport.load_plugins");
-                    Console.Error.WriteLine(e.Message);
-                }
+                return false;
             }
-            else
-            {
-                if (_UseSharedMemory)
-                {
-                    qos.transport_builtin.mask = (int)DDS.TransportBuiltinKind.TRANSPORTBUILTIN_SHMEM;
-                }
-                else
-                {
-                    if (_UseUdpv6)
-                    {
-                        qos.transport_builtin.mask = (int)DDS.TransportBuiltinKind.TRANSPORTBUILTIN_UDPv6;
-                    }
-                }
-            }
+
             if (_AutoThrottle) {
             	try
                 {
@@ -1348,35 +1525,7 @@ namespace PerformanceTest
                     Console.Error.WriteLine(e.Message);
                 }
             }
-            if (_UseSharedMemory)
-            {
-                int received_message_count_max = 1024 * 1024 * 2 / (int)_DataLen;
-                if (received_message_count_max < 1) {
-                    received_message_count_max = 1;
-                }
 
-                DDS.PropertyQosPolicyHelper.add_property(
-                        qos.property_qos,
-                        "dds.transport.shmem.builtin.received_message_count_max",
-                        received_message_count_max.ToString(),
-                        false);
-            }
-            else
-            {
-                if (_Nic.Length > 0)
-                {
-                    DDS.PropertyQosPolicyHelper.add_property(
-                            qos.property_qos,
-                            "dds.transport.UDPv4.builtin.parent.allow_interfaces",
-                            _Nic,
-                            false);
-                    DDS.PropertyQosPolicyHelper.add_property(
-                            qos.property_qos,
-                            "dds.transport.TCPv4.tcp1.parent.allow_interfaces",
-                            _Nic,
-                            false);
-                }
-            }
             // Creates the participant
             _participant = _factory.create_participant(
                 _DomainID, qos, listener,
@@ -1385,8 +1534,7 @@ namespace PerformanceTest
                  DDS.StatusKind.OFFERED_INCOMPATIBLE_QOS_STATUS |
                  DDS.StatusKind.REQUESTED_INCOMPATIBLE_QOS_STATUS));
 
-            if (_participant == null)
-            {
+            if (_participant == null) {
                 Console.Error.Write("Problem creating participant.\n");
                 return false;
             }
@@ -1398,7 +1546,7 @@ namespace PerformanceTest
             {
 
                 _publisher = _participant.create_publisher_with_profile(
-                    _ProfileLibraryName, "TransportQos", null, DDS.StatusMask.STATUS_MASK_NONE);
+                    _ProfileLibraryName, "BaseProfileQos", null, DDS.StatusMask.STATUS_MASK_NONE);
 
                 if (_publisher == null)
                 {
@@ -1407,7 +1555,7 @@ namespace PerformanceTest
                 }
 
                 _subscriber = _participant.create_subscriber_with_profile(
-                    _ProfileLibraryName, "TransportQos", null, DDS.StatusMask.STATUS_MASK_NONE);
+                    _ProfileLibraryName, "BaseProfileQos", null, DDS.StatusMask.STATUS_MASK_NONE);
 
                 if (_subscriber == null)
                 {
@@ -1465,7 +1613,7 @@ namespace PerformanceTest
         /*********************************************************
          * printSecureArgs
          */
-        private void PrintSecureArgs()
+        private string PrintSecureArgs()
         {
 
             string secure_arguments_string =
@@ -1538,7 +1686,7 @@ namespace PerformanceTest
             {
                 secure_arguments_string += "\t debug level: " + _secureDebugLevel + "\n";
             }
-            Console.Error.Write(secure_arguments_string);
+            return secure_arguments_string;
         }
 
         /*********************************************************
@@ -1547,9 +1695,6 @@ namespace PerformanceTest
         private void ConfigureSecurePlugin(DDS.DomainParticipantQos dpQos)
         {
             // configure use of security plugins, based on provided arguments
-
-            // print arguments
-            PrintSecureArgs();
 
             // load plugin
             DDS.PropertyQosPolicyHelper.add_property(
@@ -1570,43 +1715,50 @@ namespace PerformanceTest
                     _secureLibrary,
                     false);
 
+            /*
+             * Below, we are using com.rti.serv.secure properties in order to
+             * be backward compatible with RTI Connext DDS 5.3.0 and below.
+             * Later versions use the properties that are specified in the DDS
+             * Security specification (see also the RTI Security Plugins
+             * Getting Started Guide). However, later versions still support
+             * the legacy properties as an alternative.
+             */
+
             // check if governance file provided
             if (_secureGovernanceFile == null)
             {
                 // choose a pre-built governance file
-                StringBuilder file = new StringBuilder("resource/secure/signed_PerftestGovernance_");
+                _secureGovernanceFile = "resource/secure/signed_PerftestGovernance_";
 
                 if (_secureIsDiscoveryEncrypted)
                 {
-                    file.Append("Discovery");
+                    _secureGovernanceFile += "Discovery";
                 }
 
                 if (_secureIsSigned)
                 {
-                    file.Append("Sign");
+                    _secureGovernanceFile += "Sign";
                 }
 
                 if (_secureIsDataEncrypted && _secureIsSMEncrypted)
                 {
-                    file.Append("EncryptBoth");
+                    _secureGovernanceFile += "EncryptBoth";
                 }
                 else if (_secureIsDataEncrypted)
                 {
-                    file.Append("EncryptData");
+                    _secureGovernanceFile += "EncryptData";
                 }
                 else if (_secureIsSMEncrypted)
                 {
-                    file.Append("EncryptSubmessage");
+                    _secureGovernanceFile += "EncryptSubmessage";
                 }
 
-                file.Append(".xml");
-
-                Console.Error.WriteLine("Secure: using pre-built governance file:" +
-                        file.ToString());
+                _secureGovernanceFile += ".xml";
+                
                 DDS.PropertyQosPolicyHelper.add_property(
                         dpQos.property_qos,
                         "com.rti.serv.secure.access_control.governance_file",
-                        file.ToString(),
+                        _secureGovernanceFile,
                         false);
             }
             else
@@ -1683,38 +1835,10 @@ namespace PerformanceTest
                 return null;
             }
 
-            if (topic_name == perftest_cs._ThroughputTopicName)
+            qos_profile = getQoSProfileName(topic_name);
+            if (qos_profile == null)
             {
-                if (_UsePositiveAcks)
-                {
-                    qos_profile = "ThroughputQos";
-                }
-                else
-                {
-                    qos_profile = "NoAckThroughputQos";
-                }
-            }
-            else if (topic_name == perftest_cs._LatencyTopicName)
-            {
-                if (_UsePositiveAcks)
-                {
-                    qos_profile = "LatencyQos";
-                }
-                else
-                {
-                    qos_profile = "NoAckLatencyQos";
-                }
-            }
-            else if (topic_name == perftest_cs._AnnouncementTopicName)
-            {
-                qos_profile = "AnnouncementQos";
-            }
-            else
-            {
-                Console.Error.WriteLine("topic name must either be "
-                    + perftest_cs._ThroughputTopicName
-                    + " or " + perftest_cs._LatencyTopicName
-                    + " or " + perftest_cs._AnnouncementTopicName);
+                Console.Error.WriteLine("Problem getting qos profile.\n");
                 return null;
             }
 
@@ -1730,42 +1854,45 @@ namespace PerformanceTest
                 return null;
             }
 
-            if (_UsePositiveAcks)
-            {
-                dw_qos.protocol.rtps_reliable_writer.disable_positive_acks_min_sample_keep_duration.sec = (int)_KeepDurationUsec/1000000;
-                dw_qos.protocol.rtps_reliable_writer.disable_positive_acks_min_sample_keep_duration.nanosec = _KeepDurationUsec%1000000;
+            if (!_UsePositiveAcks 
+                    && (qos_profile == "ThroughputQos"
+                        || qos_profile == "LatencyQos")) {
+                dw_qos.protocol.disable_positive_acks = true;
+                if (_KeepDurationUsec != -1) {
+                    dw_qos.protocol.rtps_reliable_writer.disable_positive_acks_min_sample_keep_duration =
+                        DDS.Duration_t.from_micros((ulong)_KeepDurationUsec);
+                }
             }
 
             if (_isLargeData || _IsAsynchronous)
             {
-                Console.Error.Write("Using asynchronous write for " + topic_name + ".\n");
                 dw_qos.publish_mode.kind = DDS.PublishModeQosPolicyKind.ASYNCHRONOUS_PUBLISH_MODE_QOS;
                 if (!_FlowControllerCustom.StartsWith("default", true, null))
                 {
                     dw_qos.publish_mode.flow_controller_name = "dds.flow_controller.token_bucket." + _FlowControllerCustom;
                 }
-                Console.Error.Write("Using flow controller " + _FlowControllerCustom + ".\n");
             }
 
             // only force reliability on throughput/latency topics
-            if (topic_name != perftest_cs._AnnouncementTopicName)
+            if (topic_name != ANNOUNCEMENT_TOPIC_NAME.VALUE)
             {
                 if (_IsReliable)
                 {
                     // default: use the setting specified in the qos profile
-                    dw_qos.reliability.kind = DDS.ReliabilityQosPolicyKind.RELIABLE_RELIABILITY_QOS;
+                    // dw_qos.reliability.kind = DDS.ReliabilityQosPolicyKind.RELIABLE_RELIABILITY_QOS;
                 }
                 else
-                {	// override to best-effort
+                {
+                    // override to best-effort
                     dw_qos.reliability.kind = DDS.ReliabilityQosPolicyKind.BEST_EFFORT_RELIABILITY_QOS;
                 }
             }
 
             // These QOS's are only set for the Throughput datawriter
-            if ((qos_profile == "ThroughputQos") || (qos_profile == "NoAckThroughputQos"))
+            if (qos_profile == "ThroughputQos")
             {
 
-                if (_IsMulticast) {
+                if (_transport.useMulticast) {
                     dw_qos.protocol.rtps_reliable_writer.enable_multicast_periodic_heartbeat = true;
                 }
 
@@ -1854,18 +1981,19 @@ namespace PerformanceTest
             }
 
 
-            if (("LatencyQos" == qos_profile ||
-                 "NoAckLatencyQos"  == qos_profile) &&
-                 !_DirectCommunication &&
-                (_Durability == 2 ||
-                 _Durability == 3)){
+            if ("LatencyQos" == qos_profile
+                    && !_DirectCommunication
+                    && ((DDS.DurabilityQosPolicyKind)_Durability 
+                            == DDS.DurabilityQosPolicyKind.TRANSIENT_DURABILITY_QOS
+                        || (DDS.DurabilityQosPolicyKind)_Durability 
+                            == DDS.DurabilityQosPolicyKind.PERSISTENT_DURABILITY_QOS)) {
 
                 dw_qos.durability.kind = (DDS.DurabilityQosPolicyKind)_Durability;
                 dw_qos.durability.direct_communication = _DirectCommunication;
             }
 
-            dw_qos.resource_limits.max_instances = _InstanceCount;
-            dw_qos.resource_limits.initial_instances = _InstanceCount;
+            dw_qos.resource_limits.max_instances = _InstanceCount + 1; // One extra for MAX_CFT_VALUE
+            dw_qos.resource_limits.initial_instances = _InstanceCount + 1;
 
             if (_InstanceCount > 1) {
                 if (_InstanceHashBuckets > 0) {
@@ -1940,6 +2068,7 @@ namespace PerformanceTest
          *              ")"
          *          The main goal for comaparing a instances and a key is by analyze the elemetns by more significant to the lest significant.
          *          So, in the case that the key is between [ {0, 0, 0, 1} and { 0, 0, 1, 44} ], it will be received.
+         * Beside, there is a special case where all the subscribers will receive the samples, it is MAX_CFT_VALUE = 65535 = [255,255,0,0,]
          */
         public DDS.ContentFilteredTopic createCft(String topic_name, DDS.Topic topic) {
             string condition;
@@ -1950,7 +2079,8 @@ namespace PerformanceTest
                 for (int i = 0; i < KEY_SIZE.VALUE ; i++) {
                     parameters.set_at(i,Convert.ToString((byte)(_CFTRange[0] >> i * 8)));
                 }
-                condition = "(%0 = key[0] AND  %1 = key[1] AND %2 = key[2] AND  %3 = key[3])";
+                condition = "(%0 = key[0] AND  %1 = key[1] AND %2 = key[2] AND  %3 = key[3]) OR " +
+                        "(255 = key[0] AND 255 = key[1] AND 0 = key[2] AND 0 = key[3])";
             } else { // If range
                 parameters.ensure_length(KEY_SIZE.VALUE * 2,KEY_SIZE.VALUE * 2);
                 Console.Error.WriteLine("CFT enabled for instance range: ["+_CFTRange[0]+","+_CFTRange[1]+"] ");
@@ -1973,7 +2103,8 @@ namespace PerformanceTest
                                 "(%7 >= key[3] AND %6 > key[2]) OR" +
                                 "(%7 >= key[3] AND %6 >= key[2] AND %5 > key[1]) OR" +
                                 "(%7 >= key[3] AND %6 >= key[2] AND %5 >= key[1] AND %4 >= key[0])" +
-                            ")" +
+                            ") OR (" +
+                                "255 = key[0] AND 255 = key[1] AND 0 = key[2] AND 0 = key[3]" +
                         ")";
             }
             return _participant.create_contentfilteredtopic(
@@ -2000,38 +2131,10 @@ namespace PerformanceTest
                 return null;
             }
 
-            if (topic_name == perftest_cs._ThroughputTopicName)
+            qos_profile = getQoSProfileName(topic_name);
+            if (qos_profile == null)
             {
-                if (_UsePositiveAcks)
-                {
-                    qos_profile = "ThroughputQos";
-                }
-                else
-                {
-                    qos_profile = "NoAckThroughputQos";
-                }
-            }
-            else if (topic_name == perftest_cs._LatencyTopicName)
-            {
-                if (_UsePositiveAcks)
-                {
-                    qos_profile = "LatencyQos";
-                }
-                else
-                {
-                    qos_profile = "NoAckLatencyQos";
-                }
-            }
-            else if (topic_name == perftest_cs._AnnouncementTopicName)
-            {
-                qos_profile = "AnnouncementQos";
-            }
-            else
-            {
-                Console.Error.WriteLine("topic name must either be "
-                    + perftest_cs._ThroughputTopicName
-                    + " or " + perftest_cs._LatencyTopicName
-                    + " or " + perftest_cs._AnnouncementTopicName);
+                Console.Error.WriteLine("Problem getting qos profile.\n");
                 return null;
             }
 
@@ -2048,7 +2151,7 @@ namespace PerformanceTest
             }
 
             // only force reliability on throughput/latency topics
-            if (topic_name != perftest_cs._AnnouncementTopicName)
+            if (topic_name != ANNOUNCEMENT_TOPIC_NAME.VALUE)
             {
                 if (_IsReliable)
                 {
@@ -2060,23 +2163,28 @@ namespace PerformanceTest
                 }
             }
 
-            if ("ThroughputQos" == qos_profile ||
-                "NoAckThroughputQos" == qos_profile) {
+            if (!_UsePositiveAcks 
+                    && (qos_profile == "ThroughputQos"
+                            || qos_profile == "LatencyQos")) {
+                dr_qos.protocol.disable_positive_acks = true;
+            }
+
+            if ("ThroughputQos" == qos_profile 
+                    || ("LatencyQos" == qos_profile
+                        && !_DirectCommunication
+                        && ((DDS.DurabilityQosPolicyKind)_Durability 
+                                == DDS.DurabilityQosPolicyKind.TRANSIENT_DURABILITY_QOS
+                            || (DDS.DurabilityQosPolicyKind)_Durability 
+                                == DDS.DurabilityQosPolicyKind.PERSISTENT_DURABILITY_QOS))) {
+
                 dr_qos.durability.kind = (DDS.DurabilityQosPolicyKind)_Durability;
                 dr_qos.durability.direct_communication = _DirectCommunication;
             }
 
-            if (("LatencyQos" == qos_profile ||
-                "NoAckLatencyQos" == qos_profile) &&
-                !_DirectCommunication &&
-                (_Durability == 2 ||
-                 _Durability == 3)){
-
-                dr_qos.durability.kind = (DDS.DurabilityQosPolicyKind)_Durability;
-                dr_qos.durability.direct_communication = _DirectCommunication;
+            dr_qos.resource_limits.initial_instances = _InstanceCount + 1;
+            if (_InstanceMaxCountReader != -1) {
+                _InstanceMaxCountReader++;
             }
-
-            dr_qos.resource_limits.initial_instances = _InstanceCount;
             dr_qos.resource_limits.max_instances = _InstanceMaxCountReader;
 
             if (_InstanceCount > 1) {
@@ -2087,21 +2195,18 @@ namespace PerformanceTest
                 }
             }
 
-            if (!_UseTcpOnly && !_UseSharedMemory && _IsMulticast)
+            if (_transport.useMulticast && _transport.AllowsMulticast())
             {
                 string multicast_addr;
 
-                if (topic_name == perftest_cs._ThroughputTopicName)
+                multicast_addr = _transport.getMulticastAddr(topic_name);
+                if (multicast_addr == null)
                 {
-                    multicast_addr = THROUGHPUT_MULTICAST_ADDR;
-                }
-                else if (topic_name == perftest_cs._LatencyTopicName)
-                {
-                    multicast_addr = LATENCY_MULTICAST_ADDR;
-                }
-                else
-                {
-                    multicast_addr = ANNOUNCEMENT_MULTICAST_ADDR;
+                    Console.Error.WriteLine("topic name must either be "
+                            + THROUGHPUT_TOPIC_NAME.VALUE
+                            + " or " + LATENCY_TOPIC_NAME.VALUE
+                            + " or " + ANNOUNCEMENT_TOPIC_NAME.VALUE);
+                    return null;
                 }
 
                 DDS.TransportMulticastSettings_t multicast_setting = new DDS.TransportMulticastSettings_t();
@@ -2129,7 +2234,8 @@ namespace PerformanceTest
                         _useUnbounded.ToString(), false);
             }
 
-            if ( _useCft && topic_name == perftest_cs._ThroughputTopicName){
+            if ( _useCft && topic_name == THROUGHPUT_TOPIC_NAME.VALUE)
+            {
                 topic_desc = createCft(topic_name, topic);
                 if (topic_desc == null) {
                     Console.Error.WriteLine("Create_contentfilteredtopic error");
@@ -2154,40 +2260,53 @@ namespace PerformanceTest
             return new RTISubscriber<T>(reader, _DataTypeHelper.clone());
         }
 
+        public string getQoSProfileName(string topicName)
+        {
+            string name;
+            if (_qoSProfileNameMap.TryGetValue(topicName, out name)) {
+                return name;
+            }
+            else {
+                Console.Error.WriteLine("topic name must either be "
+                        + THROUGHPUT_TOPIC_NAME.VALUE
+                        + " or " + LATENCY_TOPIC_NAME.VALUE
+                        + " or " + ANNOUNCEMENT_TOPIC_NAME.VALUE);
+                return null;
+            }
+        }
+
+        static int RTIPERFTEST_MAX_PEERS = 1024;
+
         private int    _SendQueueSize = 50;
         private ulong    _DataLen = 100;
         private ulong     _useUnbounded = 0;
         private int    _DomainID = 1;
-        private string _Nic = "";
         private string _ProfileFile = "perftest_qos_profiles.xml";
         private bool   _IsReliable = true;
-        private bool   _IsMulticast = false;
         private bool   _AutoThrottle = false;
         private bool   _TurboMode = false;
-        private int    _BatchSize = 0;
+        private int    _BatchSize = (int)DEFAULT_THROUGHPUT_BATCH_SIZE.VALUE; // Default 8 kB
         private int    _InstanceCount = 1;
         private int    _InstanceMaxCountReader = -1;
         private int     _InstanceHashBuckets = -1;
         private int     _Durability = 0;
         private bool    _DirectCommunication = true;
-        private uint   _KeepDurationUsec = 1000;
+        private long    _KeepDurationUsec = -1;
         private bool   _UsePositiveAcks = true;
-        private bool   _UseSharedMemory = false;
-        private bool   _UseUdpv6 = false;
         private bool    _LatencyTest = false;
-        private bool   _UseTcpOnly = false;
         private bool   _isLargeData = false;
         private bool   _isScan = false;
         private bool   _isPublisher = false;
         private bool _IsAsynchronous = false;
+        private bool _isDynamicData = false;
         private string _FlowControllerCustom = "default";
         string[] valid_flow_controller = { "default", "1Gbps", "10Gbps" };
-        static int             RTIPERFTEST_MAX_PEERS = 1024;
         private int     _peer_host_count = 0;
         private string[] _peer_host = new string[RTIPERFTEST_MAX_PEERS];
         private bool    _useCft = false;
         private int     _instancesToBeWritten = -1;
         private int[]   _CFTRange = {0,0};
+        private PerftestTransport _transport;
 
 
 
@@ -2216,9 +2335,6 @@ namespace PerformanceTest
         private static int   _WaitsetEventCount = 5;
         private static uint  _WaitsetDelayUsec = 100;
 
-        private static string THROUGHPUT_MULTICAST_ADDR = "239.255.1.1";
-        private static string LATENCY_MULTICAST_ADDR = "239.255.1.2";
-        private static string ANNOUNCEMENT_MULTICAST_ADDR = "239.255.1.100";
         private static string SECUREPRIVATEKEYFILEPUB = "./resource/secure/pubkey.pem";
         private static string SECUREPRIVATEKEYFILESUB = "./resource/secure/subkey.pem";
         private static string SECURECERTIFICATEFILEPUB = "./resource/secure/pub.pem";
@@ -2227,7 +2343,8 @@ namespace PerformanceTest
         private static string SECUREPERMISIONFILEPUB = "./resource/secure/signed_PerftestPermissionsPub.xml";
         private static string SECUREPERMISIONFILESUB = "./resource/secure/signed_PerftestPermissionsSub.xml";
         private static string SECURELIBRARYNAME = "nddssecurity";
-        private const string _ProfileLibraryName = "PerftestQosLibrary";
+
+        private string _ProfileLibraryName = "PerftestQosLibrary";
 
         private DDS.DomainParticipantFactory _factory = null;
         private DDS.DomainParticipant        _participant = null;
@@ -2238,5 +2355,8 @@ namespace PerformanceTest
         private ITypeHelper<T>                  _DataTypeHelper = null;
 
         private Semaphore _pongSemaphore = null;
+
+        private SortedDictionary<string, string> _qoSProfileNameMap =
+                new SortedDictionary<string, string>();
     }
 }
