@@ -67,7 +67,7 @@ unsigned long long PerftestClock::getTimeUsec()
             &clockSec,
             &clockUsec,
             (struct OSAPI_NtpTime*)&clockTimeAux);
-    return clockUsec + (unsigned long long)1000000 * clockSec;
+    return clockUsec + (unsigned long long) 1000000 * clockSec;
 
   #else
     /*
@@ -86,7 +86,7 @@ unsigned long long PerftestClock::getTimeUsec()
      */
     LARGE_INTEGER ticks;
     QueryPerformanceCounter(&ticks);
-    return (unsigned long long)(ticks.QuadPart)/(_frequency/1000000.0);
+    return ticks.QuadPart / (unsigned long long) (_frequency /1000000.0);
 
   #endif
 
@@ -106,7 +106,7 @@ const std::string GetDDSVersionString()
     return "RTI Connext DDS Micro "
             + std::to_string((int) RTIME_DDS_VERSION_MAJOR) + "."
             + std::to_string((int) RTIME_DDS_VERSION_MINOR) + "."
-            + std::to_string((int) RTIME_DDS_VERSION_REVISION);
+            + std::to_string((int) RTIME_DDS_VERSION_RELEASE);
 }
 
 void PerftestConfigureVerbosity(int verbosityLevel)

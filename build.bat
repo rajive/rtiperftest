@@ -53,11 +53,18 @@ set "java_lang_string=java"
 @REM # Variables for customType
 set "custom_type_folder=%idl_location%\customType"
 set USE_CUSTOM_TYPE=0
+set USE_CUSTOM_TYPE_FLAT=0
 set "custom_type=" @REM # Type of the customer
+set "custom_type_flat=" @REM # Type of the customer
 @REM # Name of the file with the type. "TSupport.h"
 set "custom_type_file_name_support="
 @REM # Intermediate file for including the custom type file #include "file.idl"
 set "custom_idl_file=%custom_type_folder%\custom.idl"
+
+@REM # Variables for FlatData
+set "flatdata_size=10485760" @REM # 10MB
+set flatdata_ddsgen_version=300
+set FLATDATA_AVAILABLE=0
 ::------------------------------------------------------------------------------
 
 @REM # Initial message
@@ -161,6 +168,22 @@ if NOT "%1"=="" (
 					exit /b 1
 				)
 				SHIFT
+		) ELSE if "%1"=="--customTypeFlatData" (
+				SET USE_CUSTOM_TYPE_FLAT=1
+				SET "custom_type_flat=%2"
+				if "!custom_type_flat!"== "" (
+					echo [ERROR]: --customTypeFlatData should be followed by the name of the type.
+					call:help
+					exit /b 1
+				)
+				SHIFT
+		) ELSE if "%1"=="--flatdata-max-size" (
+				SET "flatdata_size=%2"
+				if "!flatdata_size!"  LEQ "0" (
+					echo [ERROR]: "--flatdata-max-size n" requires "n > 0."
+					exit /b 1
+				)
+				SHIFT
 		) ELSE (
 				echo [ERROR]: Unknown argument "%1"
 				call:help
@@ -192,10 +215,10 @@ if !BUILD_MICRO! == 1 (
 	if not exist "%RTIMEHOME%" (
 		@REM # Is NDDSHOME set?
 		if not exist "%NDDSHOME%" (
-			echo [ERROR]: Nor RTIMEHOME nor NDDSHOME variables are set.
+			echo [ERROR]: Nor RTIMEHOME nor NDDSHOME variables are set or the paths do not exist.
 			exit /b 1
 		) else (
-			echo [WARNING]: The RTIMEHOME variable is not set, using NDDSHOME.
+			echo [WARNING]: The RTIMEHOME variable is not set or the path does not exist, using NDDSHOME instead.
 		)
 	) else (
 		set "NDDSHOME=!RTIMEHOME!"
@@ -211,7 +234,7 @@ if !BUILD_MICRO! == 1 (
 ) else (
 
 	if not exist "%NDDSHOME%" (
-			echo [ERROR]: The NDDSHOME variable is not set.
+			echo [ERROR]: The NDDSHOME variable is not set or the path does not exist.
 			exit /b 1
 	)
 
@@ -291,6 +314,7 @@ if !BUILD_CPP! == 1 (
 
 	call::copy_src_cpp_common
 	call::solution_compilation_flag_calculation
+	call::get_flatdata_available
 
 	REM # Generate files for the custom type files
 	set "additional_defines_custom_type="
@@ -333,6 +357,10 @@ if !BUILD_CPP! == 1 (
 		set "additional_source_files_custom_type=!additional_source_files_custom_type! "
 		REM # Adding RTI_USE_CUSTOM_TYPE as a macro
 		set "additional_defines_custom_type= -D RTI_CUSTOM_TYPE=%custom_type%"
+
+		if !USE_CUSTOM_TYPE_FLAT! == 1 (
+			set "additional_defines_custom_type=!additional_defines_custom_type! -D RTI_CUSTOM_TYPE_FLATDATA=%custom_type_flat%"
+		)
 	)
 
 	if !LEGACY_DD_IMPL! == 1 (
@@ -351,30 +379,69 @@ if !BUILD_CPP! == 1 (
 				echo [ERROR]: In order to link statically using the security plugin you need to also provide the OpenSSL home path by using the --openssl-home option.
 				exit /b 1
 			)
-			set rtiddsgen_extra_options=-additionalRtiLibraries nddssecurity -additionalLibraries "libeay32z ssleay32z"
+			set additional_rti_libs=nddssecurity !additional_rti_libs!
+			set rtiddsgen_extra_options=-additionalLibraries "libeay32z ssleay32z"
 			set rtiddsgen_extra_options=!rtiddsgen_extra_options! -additionalLibraryPaths "!RTI_OPENSSLHOME!\static_!RELEASE_DEBUG!\lib"
 			echo [INFO] Using security plugin. Linking Statically.
 		)
-		set "additional_header_files=!additional_header_files! PerftestSecurity.h"
-		set "additional_source_files=!additional_source_files! PerftestSecurity.cxx"
+		set "additional_header_files=PerftestSecurity.h !additional_header_files!"
+		set "additional_source_files=PerftestSecurity.cxx !additional_source_files!"
+	)
+
+	if !FLATDATA_AVAILABLE! == 1 (
+        @REM On Windows we always enable ZeroCopy if FlatData is available.
+		set additional_rti_libs=nddsmetp !additional_rti_libs!
+		set "ADDITIONAL_DEFINES=!ADDITIONAL_DEFINES! RTI_FLATDATA_MAX_SIZE=!flatdata_size! RTI_FLATDATA_AVAILABLE RTI_ZEROCOPY_AVAILABLE"
+		set "additional_defines_flatdata=-D "RTI_FLATDATA_AVAILABLE" -D "RTI_ZEROCOPY_AVAILABLE" -D "RTI_FLATDATA_MAX_SIZE=!flatdata_size!""
 	)
 
 	if !USE_CUSTOM_TYPE! == 1 (
 		set "ADDITIONAL_DEFINES=!ADDITIONAL_DEFINES! RTI_CUSTOM_TYPE=%custom_type% RTI_CUSTOM_TYPE_FILE_NAME_SUPPORT=!custom_type_file_name_support!"
+
+		if !USE_CUSTOM_TYPE_FLAT! == 1 (
+			set "ADDITIONAL_DEFINES=!ADDITIONAL_DEFINES! RTI_CUSTOM_TYPE_FLATDATA=%custom_type_flat%"
+		)
+	)
+
+	where git >nul 2>nul
+	If !ERRORLEVEL! == 0 (
+		for /f "tokens=* USEBACKQ" %%F in (`git rev-parse --short HEAD`) do (
+			set commit_id=%%F
+		)
+		set "ADDITIONAL_DEFINES=!ADDITIONAL_DEFINES! PERFTEST_COMMIT_ID=\"!commit_id!\""
 	)
 
 	set "ADDITIONAL_DEFINES=/0x !ADDITIONAL_DEFINES!"
 	set "additional_header_files=!additional_header_files_custom_type!!additional_header_files!RTIRawTransportImpl.h Parameter.h ParameterManager.h ThreadPriorities.h RTIDDSLoggerDevice.h MessagingIF.h RTIDDSImpl.h perftest_cpp.h qos_string.h CpuMonitor.h PerftestTransport.h Infrastructure_common.h Infrastructure_pro.h"
 	set "additional_source_files=!additional_source_files_custom_type!!additional_source_files!RTIRawTransportImpl.cxx Parameter.cxx ParameterManager.cxx ThreadPriorities.cxx RTIDDSLoggerDevice.cxx RTIDDSImpl.cxx CpuMonitor.cxx PerftestTransport.cxx Infrastructure_common.cxx Infrastructure_pro.cxx"
 
-	@REM # Generate files for srcCpp
+	if !FLATDATA_AVAILABLE! == 1 (
+		set "additional_header_files=!additional_header_files! perftest_ZeroCopy.h perftest_ZeroCopyPlugin.h perftest_ZeroCopySupport.h"
+		set "additional_source_files=!additional_source_files! perftest_ZeroCopy.cxx perftest_ZeroCopyPlugin.cxx perftest_ZeroCopySupport.cxx"
+	)
+
 	echo[
-	echo [INFO]: Generating types and makefiles for %classic_cpp_lang_string%
-	call "%rtiddsgen_executable%" -language %classic_cpp_lang_string% -unboundedSupport -replace^
-	-create typefiles -create makefiles -platform %architecture%^
+	echo "%rtiddsgen_executable%" -language %classic_cpp_lang_string%^
+	-unboundedSupport -replace -create typefiles -create makefiles^
+	-platform %architecture%^
+	!additional_defines_flatdata!^
 	-additionalHeaderFiles "!additional_header_files!"^
 	-additionalSourceFiles "!additional_source_files!"^
 	-additionalDefines "!ADDITIONAL_DEFINES!"^
+	-additionalRtiLibraries "!additional_rti_libs!"^
+	!rtiddsgen_extra_options! !additional_defines_custom_type!^
+	-d "%classic_cpp_folder%" "%idl_location%\perftest.idl"
+
+	echo[
+	echo [INFO]: Generating types and makefiles for %classic_cpp_lang_string%
+	call "%rtiddsgen_executable%" -language %classic_cpp_lang_string%^
+	-unboundedSupport -replace -create typefiles -create makefiles^
+	-platform %architecture%^
+	!additional_defines_flatdata!^
+	-additionalHeaderFiles "!additional_header_files!"^
+	-additionalSourceFiles "!additional_source_files!"^
+	-additionalDefines "!ADDITIONAL_DEFINES!"^
+	-additionalRtiLibraries "!additional_rti_libs!"^
 	!rtiddsgen_extra_options! !additional_defines_custom_type!^
 	-d "%classic_cpp_folder%" "%idl_location%\perftest.idl"
 	if not !ERRORLEVEL! == 0 (
@@ -382,6 +449,32 @@ if !BUILD_CPP! == 1 (
 		call::clean_src_cpp_common
 		exit /b 1
 	)
+
+    @REM # Generate ZeroCopy types avoiding performance degradation issue
+	if !FLATDATA_AVAILABLE! == 1 (
+		echo[
+		echo "%rtiddsgen_executable%" -language %classic_cpp_lang_string%^
+		!additional_defines_flatdata!^
+		-replace -create typefiles^
+		-platform %architecture%^
+		!rtiddsgen_extra_options! !additional_defines_custom_type!^
+		-d "%classic_cpp_folder%" "%idl_location%\perftest_ZeroCopy.idl"
+
+		echo[
+		echo [INFO]: Generating Zero Copy code
+		call "%rtiddsgen_executable%" -language %classic_cpp_lang_string%^
+		!additional_defines_flatdata!^
+		-replace -create typefiles^
+		-platform %architecture%^
+		!rtiddsgen_extra_options! !additional_defines_custom_type!^
+		-d "%classic_cpp_folder%" "%idl_location%\perftest_ZeroCopy.idl"
+		if not !ERRORLEVEL! == 0 (
+			echo [ERROR]: Failure generating code for %classic_cpp_lang_string%.
+			call::clean_src_cpp_common
+			exit /b 1
+		)
+	)
+
 	call copy "%classic_cpp_folder%"\perftest_publisher.cxx "%classic_cpp_folder%"\perftest_subscriber.cxx
 
 	echo[
@@ -413,8 +506,11 @@ if !BUILD_CPP! == 1 (
 if !BUILD_CPP03! == 1 (
 	call::copy_src_cpp_common
 	call::solution_compilation_flag_calculation
+	call::get_flatdata_available
 
 	set "ADDITIONAL_DEFINES=RTI_LANGUAGE_CPP_MODERN"
+	set additional_rti_libs=
+
 	if !USE_SECURE_LIBS! == 1 (
 		set "ADDITIONAL_DEFINES=!ADDITIONAL_DEFINES! RTI_SECURE_PERFTEST"
 		if "x!STATIC_DYNAMIC!" == "xdynamic" (
@@ -424,20 +520,60 @@ if !BUILD_CPP03! == 1 (
 				echo [ERROR]: In order to link statically using the security plugin you need to also provide the OpenSSL home path by using the --openssl-home option.
 				exit /b 1
 			)
-			set rtiddsgen_extra_options=-additionalRtiLibraries nddssecurity -additionalLibraries "libeay32z ssleay32z"
+			set additional_rti_libs=nddssecurity !additional_rti_libs!
+			set rtiddsgen_extra_options=-additionalLibraries "libeay32z ssleay32z"
 			set rtiddsgen_extra_options=!rtiddsgen_extra_options! -additionalLibraryPaths "!RTI_OPENSSLHOME!\static_!RELEASE_DEBUG!\lib"
 			echo [INFO] Using security plugin. Linking Statically.
 		)
 	)
+
+	where git >nul 2>nul
+	If !ERRORLEVEL! == 0 (
+		for /f "tokens=* USEBACKQ" %%F in (`git rev-parse --short HEAD`) do (
+			set commit_id=%%F
+		)
+		set "ADDITIONAL_DEFINES=!ADDITIONAL_DEFINES! PERFTEST_COMMIT_ID=\"!commit_id!\""
+	)
+
+	if !FLATDATA_AVAILABLE! == 1 (
+		set "additional_rti_libs=nddsmetp !additional_rti_libs!"
+		set "ADDITIONAL_DEFINES=!ADDITIONAL_DEFINES! RTI_FLATDATA_MAX_SIZE=!flatdata_size! RTI_FLATDATA_AVAILABLE"
+		set "additional_defines_flatdata=-D "RTI_FLATDATA_AVAILABLE" -D "RTI_FLATDATA_MAX_SIZE=!flatdata_size!""
+	)
+
 	set "ADDITIONAL_DEFINES=/0x !ADDITIONAL_DEFINES!"
+
+	set "additional_header_files=ThreadPriorities.h Parameter.h ParameterManager.h MessagingIF.h RTIDDSImpl.h perftest_cpp.h qos_string.h CpuMonitor.h PerftestTransport.h"
+	set "additional_source_files=ThreadPriorities.cxx Parameter.cxx ParameterManager.cxx RTIDDSImpl.cxx CpuMonitor.cxx PerftestTransport.cxx"
+
+	if !FLATDATA_AVAILABLE! == 1 (
+		set "additional_header_files=!additional_header_files! perftest_ZeroCopy.hpp perftest_ZeroCopyPlugin.hpp"
+		set "additional_source_files=!additional_source_files! perftest_ZeroCopy.cxx perftest_ZeroCopyPlugin.cxx"
+	)
+
+	echo[
+	echo [INFO] "%rtiddsgen_executable%" -language %modern_cpp_lang_string% ^
+	-unboundedSupport -replace -create typefiles -create makefiles^
+	-platform %architecture%^
+	!additional_defines_flatdata!^
+	-additionalHeaderFiles "!additional_header_files!"^
+	-additionalSourceFiles "!additional_source_files!"^
+	-additionalDefines "!ADDITIONAL_DEFINES!"^
+	-additionalRtiLibraries "!additional_rti_libs!"^
+	!rtiddsgen_extra_options!^
+	-d "%modern_cpp_folder%" "%idl_location%\perftest.idl"
 
 	@REM #Generate files for srcCpp03
 	echo[
 	echo [INFO]: Generating types and makefiles for %modern_cpp_lang_string%
-	call "%rtiddsgen_executable%" -language %modern_cpp_lang_string% -unboundedSupport -replace^
-	-create typefiles -create makefiles -platform %architecture%^
-	-additionalHeaderFiles "ThreadPriorities.h Parameter.h ParameterManager.h MessagingIF.h RTIDDSImpl.h perftest_cpp.h qos_string.h CpuMonitor.h PerftestTransport.h"^
-	-additionalSourceFiles "ThreadPriorities.cxx Parameter.cxx ParameterManager.cxx RTIDDSImpl.cxx CpuMonitor.cxx PerftestTransport.cxx" -additionalDefines "!ADDITIONAL_DEFINES!"^
+	call "%rtiddsgen_executable%" -language %modern_cpp_lang_string% ^
+	-unboundedSupport -replace -create typefiles -create makefiles^
+	-platform %architecture%^
+	!additional_defines_flatdata!^
+	-additionalHeaderFiles "!additional_header_files!"^
+	-additionalSourceFiles "!additional_source_files!"^
+	-additionalDefines "!ADDITIONAL_DEFINES!"^
+	-additionalRtiLibraries "!additional_rti_libs!"^
 	!rtiddsgen_extra_options!^
 	-d "%modern_cpp_folder%" "%idl_location%\perftest.idl"
 
@@ -446,6 +582,31 @@ if !BUILD_CPP03! == 1 (
 		call::clean_src_cpp_common
 		exit /b 1
 	)
+
+	if !FLATDATA_AVAILABLE! == 1 (
+		echo[
+		echo "%rtiddsgen_executable%" -language %modern_cpp_lang_string%^
+		!additional_defines_flatdata!^
+		-replace -create typefiles -platform %architecture%^
+		!rtiddsgen_extra_options!^
+		-d "%modern_cpp_folder%" "%idl_location%\perftest_ZeroCopy.idl"
+
+
+		@REM # Generate Zero Copy types avoiding performance degradation issue
+		echo[
+		echo [INFO]: Generating Zero Copy code
+		call "%rtiddsgen_executable%" -language %modern_cpp_lang_string%^
+		!additional_defines_flatdata!^
+		-replace -create typefiles -platform %architecture%^
+		!rtiddsgen_extra_options!^
+		-d "%modern_cpp_folder%" "%idl_location%\perftest_ZeroCopy.idl"
+		if not !ERRORLEVEL! == 0 (
+			echo [ERROR]: Failure generating code for %modern_cpp_lang_string%.
+			call::clean_src_cpp_common
+			exit /b 1
+		)
+	)
+
 	call copy "%modern_cpp_folder%"\perftest_publisher.cxx "%modern_cpp_folder%"\perftest_subscriber.cxx
 
 	echo[
@@ -683,9 +844,7 @@ GOTO:EOF
 ::------------------------------------------------------------------------------
 @REM #FUNCTIONS:
 
-:get_solution_name
-
-	@REM #The name of the solution will depend on the rtiddsgen version
+:get_ddsgen_version
 	for /F "delims=" %%i in ('"%NDDSHOME%\bin\rtiddsgen.bat" -version ^| findstr /R /C:rtiddsgen') do (
 		set version_line=%%i
 	)
@@ -696,6 +855,21 @@ GOTO:EOF
 		set Minor=%%b
 		set Revision=%%c
 	)
+
+	set /a version_number=%Major%%Minor%%Revision%
+GOTO:EOF
+
+:get_flatdata_available
+	call::get_ddsgen_version
+
+	if %version_number% GEQ %flatdata_ddsgen_version% (
+		echo [INFO] FlatData is available
+		set FLATDATA_AVAILABLE=1
+	)
+goto:EOF
+
+:get_solution_name
+	call::get_ddsgen_version
 
 	if not x%architecture:INtime=%==x%architecture% (
 		set begin_sol=perftest_publisher-
@@ -738,8 +912,6 @@ GOTO:EOF
 		set extension=.vcxproj
 	)
 
-	set /a version_number=%Major%%Minor%%Revision%
-
 	if %version_number% GEQ %rtiddsgen_version_number_new_solution_name% (
 		set solution_name_cpp=perftest_publisher-%architecture%%extension%
 		set solution_name_cs=perftest-%architecture%.sln
@@ -748,73 +920,78 @@ GOTO:EOF
 		set solution_name_cs=%begin_sol_cs%csharp.sln
 	)
 	set cs_bin_path=bin\%cs_64%!RELEASE_DEBUG!-%end_sol%
-
 GOTO:EOF
 
 :help
 	echo[
 	echo This scripts accepts the following parameters:
 	echo[
-	echo.    --micro                Build RTI Perftest for RTI Connext Micro
-	echo.                           By default RTI Perftest will assume it will be
-	echo.                           built against RTI Connext DDS Professional.
-	echo.    --platform your_arch   Platform for which build.sh is going to compile
-	echo.                           RTI Perftest.
-	echo.    --nddshome path        Path to the *RTI Connext DDS Professional
-	echo.                           installation*. If this parameter is not present
-	echo.                           the $NDDSHOME variable should be set.
-	echo.                           If provided when building micro, it will be
-	echo.                           used as $RTIMEHOME
-	echo.    --rtimehome path       Path to the *RTI Connext DDS Micro
-	echo.                           installation*. If this parameter is not present
-	echo.                           the $RTIMEHOME variable should be set
-	echo.    --skip-java-build      Avoid Java ByteCode generation creation.
-	echo.                           (No effect when building for Micro)
-	echo.    --skip-cpp-build       Avoid C++ code generation and compilation.
-	echo.    --skip-cpp03-build     Avoid C++ New PSM code generation and
-	echo.                           compilation.
-	echo.                           (No effect when building for Micro)
-	echo.    --skip-cs-build        Avoid C Sharp code generation and compilation.
-	echo.                           (No effect when building for Micro)
-	echo.    --java-build           Only Java ByteCode generation creation.
-	echo.                           (No effect when building for Micro)
-	echo.    --cpp-build            Only C++ code generation and compilation.
-	echo.    --cpp03-build          Only C++ New PSM code generation and
-	echo.                           compilation.
-	echo.                           (No effect when building for Micro)
-	echo.    --cs-build             Only C Sharp code generation and compilation.
-	echo.                           (No effect when building for Micro)
-	echo.    --cmake  path          Path to the CMAKE executable. If this
-	echo.                           parameter is not present, Cmake variable
-	echo.                           should be available from your $PATH variable.
-	echo.    --cmake-generator g    CMake generator to use. By default, NMake
-	echo.                           makefiles will be generated.
-	echo.    --perl path            Path to PERL executable. If this parameter is
-	echo.                           not present, the path to PERL should be
-	echo.                           available from your \$PATH variable.
-	echo.    --java-home path       Path to the Java JDK home folder. If this
-	echo.                           parameter is not present, javac, jar and java
-	echo.                           executables should be available from your
-	echo.                           $PATH variable.
-	echo.                           (No effect when building for Micro)
-	echo.    --debug                Compile against the RTI Connext Debug
-	echo.                           libraries. Default is against release ones.
-	echo.    --dynamic              Compile against the RTI Connext Dynamic
-	echo.                           libraries. Default is against static ones.
-	echo.                           (No effect when building for Micro)
-	echo.    --secure               Enable the security options for compilation.
-	echo.                           Default is not enabled.
-	echo.    --openssl-home path    Path to the openssl home. This will be used
-	echo.                           when compiling statically and using security
-	echo.                           Note: For Micro provide this path with /
-	echo.                           instead of \, required by cmake.
-	echo.    --clean                If this option is present, the build.sh script
-	echo.                           will clean all the generated code and binaries
-	echo.                           from previous executions.
-	echo.    --customType type      Use the Custom type feature with your type.
-	echo.                           See details and examples of use in the
-	echo.                           documentation.
-	echo.    --help -h              Display this message.
+	echo.    --micro                      Build RTI Perftest for RTI Connext Micro
+	echo.                                 By default RTI Perftest will assume it will be
+	echo.                                 built against RTI Connext DDS Professional.
+	echo.    --platform your_arch         Platform for which build.sh is going to compile
+	echo.                                 RTI Perftest.
+	echo.    --nddshome path              Path to the *RTI Connext DDS Professional
+	echo.                                 installation*. If this parameter is not present
+	echo.                                 the $NDDSHOME variable should be set.
+	echo.                                 If provided when building micro, it will be
+	echo.                                 used as $RTIMEHOME
+	echo.    --rtimehome path             Path to the *RTI Connext DDS Micro
+	echo.                                 installation*. If this parameter is not present
+	echo.                                 the $RTIMEHOME variable should be set
+	echo.    --skip-java-build            Avoid Java ByteCode generation creation.
+	echo.                                 (No effect when building for Micro)
+	echo.    --skip-cpp-build             Avoid C++ code generation and compilation.
+	echo.    --skip-cpp03-build           Avoid C++ New PSM code generation and
+	echo.                                 compilation.
+	echo.                                 (No effect when building for Micro)
+	echo.    --skip-cs-build              Avoid C Sharp code generation and compilation.
+	echo.                                 (No effect when building for Micro)
+	echo.    --java-build                 Only Java ByteCode generation creation.
+	echo.                                 (No effect when building for Micro)
+	echo.    --cpp-build                  Only C++ code generation and compilation.
+	echo.    --cpp03-build                Only C++ New PSM code generation and
+	echo.                                 compilation.
+	echo.                                 (No effect when building for Micro)
+	echo.    --cs-build                   Only C Sharp code generation and compilation.
+	echo.                                 (No effect when building for Micro)
+	echo.    --cmake  path                Path to the CMAKE executable. If this
+	echo.                                 parameter is not present, Cmake variable
+	echo.                                 should be available from your $PATH variable.
+	echo.    --cmake-generator g          CMake generator to use. By default, NMake
+	echo.                                 makefiles will be generated.
+	echo.    --perl path                  Path to PERL executable. If this parameter is
+	echo.                                 not present, the path to PERL should be
+	echo.                                 available from your \$PATH variable.
+	echo.    --java-home path             Path to the Java JDK home folder. If this
+	echo.                                 parameter is not present, javac, jar and java
+	echo.                                 executables should be available from your
+	echo.                                 $PATH variable.
+	echo.                                 (No effect when building for Micro)
+	echo.    --debug                      Compile against the RTI Connext Debug
+	echo.                                 libraries. Default is against release ones.
+	echo.    --dynamic                    Compile against the RTI Connext Dynamic
+	echo.                                 libraries. Default is against static ones.
+	echo.                                 (No effect when building for Micro)
+	echo.    --secure                     Enable the security options for compilation.
+	echo.                                 Default is not enabled.
+	echo.    --openssl-home path          Path to the openssl home. This will be used
+	echo.                                 when compiling statically and using security
+	echo.                                 Note: For Micro provide this path with /
+	echo.                                 instead of \, required by cmake.
+	echo.    --clean                      If this option is present, the build.sh script
+	echo.                                 will clean all the generated code and binaries
+	echo.                                 from previous executions.
+	echo.    --customType type            Use the Custom type feature with your type.
+	echo.                                 See details and examples of use in the
+	echo.                                 documentation.
+	echo.    --customTypeFlatData type    Use the Custom type feature with your FlatData
+	echo.                                 type. See details and examples of use in the
+	echo.                                 documentation.
+	echo.    --flatdata-max-size size     Specify the maximum bounded size in bytes
+	echo.                                 for sequences when using FlatData language
+	echo.                                 binding. Default 10MB
+	echo.    --help -h                    Display this message.
 	echo[
 	echo ================================================================================
 GOTO:EOF
@@ -860,6 +1037,9 @@ GOTO:EOF
 	del %script_location%srcCpp\perftest.* > nul 2>nul
 	del %script_location%srcCpp\perftestPlugin.* > nul 2>nul
 	del %script_location%srcCpp\perftestSupport.* > nul 2>nul
+	del %script_location%srcCpp\perftest_ZeroCopy.* > nul 2>nul
+	del %script_location%srcCpp\perftest_ZeroCopyPlugin.* > nul 2>nul
+	del %script_location%srcCpp\perftest_ZeroCopySupport.* > nul 2>nul
 	del %script_location%srcCpp\perftest_subscriber.cxx > nul 2>nul
 	del %script_location%srcCpp\perftestApplication.h > nul 2>nul
 	del %script_location%srcCpp\perftestApplication.cxx > nul 2>nul

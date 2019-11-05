@@ -524,20 +524,22 @@ public final class RTIDDSImpl<T> implements IMessaging {
         if (_CFTRange[0] == _CFTRange[1]) { // If same elements, no range
             param_list = new String[KEY_SIZE.VALUE];
             System.err.println("CFT enabled for instance: '"+_CFTRange[0]+"'");
+
             for (int i = 0; i < KEY_SIZE.VALUE ; i++) {
                 param_list[i] = String.valueOf(byteToUnsignedInt((byte)(_CFTRange[0] >>> i * 8)));
             }
+
             condition = "(%0 = key[0] AND  %1 = key[1] AND %2 = key[2] AND  %3 = key[3]) OR " +
                         "(255 = key[0] AND 255 = key[1] AND 0 = key[2] AND 0 = key[3])";
+
         } else { // If range
             param_list = new String[KEY_SIZE.VALUE*2];
             System.err.println("CFT enabled for instance range: ["+_CFTRange[0]+","+_CFTRange[1]+"] ");
+
             for (int i = 0; i < KEY_SIZE.VALUE * 2 ; i++) {
-                if ( i < KEY_SIZE.VALUE ) {
-                    param_list[i] = String.valueOf(byteToUnsignedInt((byte)(_CFTRange[0] >>> i * 8)));
-                } else { // KEY_SIZE < i < KEY_SIZE * 2
-                    param_list[i] = String.valueOf(byteToUnsignedInt((byte)(_CFTRange[1] >>> i * 8)));
-                }
+                param_list[i] = String.valueOf(byteToUnsignedInt((byte)(
+                            _CFTRange[i < KEY_SIZE.VALUE? 0 : 1]
+                                    >>> i % KEY_SIZE.VALUE * 8)));
             }
             condition = "" +
                     "(" +
@@ -553,6 +555,7 @@ public final class RTIDDSImpl<T> implements IMessaging {
                             "(%7 >= key[3] AND %6 >= key[2] AND %5 >= key[1] AND %4 >= key[0])" +
                         ") OR (" +
                             "255 = key[0] AND 255 = key[1] AND 0 = key[2] AND 0 = key[3]" +
+                        ")" +
                     ")";
         }
         return _participant.create_contentfilteredtopic(
@@ -1689,20 +1692,19 @@ public final class RTIDDSImpl<T> implements IMessaging {
                 } else {
                     _batchSize = -2;
                 }
-            } else if (_batchSize < _dataLen * 2) {
+            } else if ((_batchSize < _dataLen * 2) && !_isScan) {
                 /*
                  * We don't want to use batching if the batch size is not large
                  * enough to contain at least two samples (in this case we avoid the
                  * checking at the middleware level).
                  */
-                if (isBatchSizeProvided || _isScan) {
+                if (isBatchSizeProvided) {
                     /*
                      * Batchsize disabled. A message will be print if _batchSize < 0 in
                      * perftest_cpp::PrintConfiguration()
                      */
                     _batchSize = -1;
-                }
-                else {
+                } else {
                     _batchSize = 0;
                 }
             }
