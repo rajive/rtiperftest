@@ -58,11 +58,14 @@ custom_type_file_name_support="" # Name of the file with the type. "TSupport.h"
 custom_idl_file="${custom_type_folder}/custom.idl"
 
 # Variables for FlatData
-flatdata_size=10485760 # 10MB
-flatdata_ddsgen_version=300 #3.0.0
+flatdata_ddsgen_version=3 # We just need the Major value of the version.
 FLATDATA_AVAILABLE=0
 ZEROCOPY_AVAILABLE=0
 darwin_shmem_size=419430400
+
+# For C++ Classic, variable to control if using or not
+# the native implementation
+RTI_PERFTEST_NANO_CLOCK=0
 
 # We will use some colors to improve visibility of errors and information
 RED='\033[0;31m'
@@ -146,11 +149,15 @@ function usage()
     echo "    --customTypeFlatData <type>  Use the Custom type feature with your FlatData "
     echo "                                 Type. See details and examples of use in the   "
     echo "                                 documentation.                                 "
-    echo "    --flatdata-max-size <size>   Specify the maximum bounded size on bytes      "
+    echo "    --flatData-max-size <size>   Specify the maximum bounded size on bytes      "
     echo "                                 for sequences when using FlatData language     "
     echo "                                 binding. Default 10MB                          "
     echo "    --osx-shmem-shmmax <size>    Maximum segment size for shared memory in OSX  "
     echo "                                 in bytes. Default 400MB                        "
+    echo "    --ns-resolution              Try to use the system real-time clock to get   "
+    echo "                                 nano-second resolution.                        "
+    echo "                                 For the Classic C++ Implementation only.       "
+    echo "                                 Default is not enabled.                        "
     echo "    --help -h                    Display this message.                          "
     echo "                                                                                "
     echo "================================================================================"
@@ -402,6 +409,10 @@ function additional_defines_calculation()
 
     if [ "${1}" = "CPPtraditional" ]; then
         additional_defines=${additional_defines}" DRTI_LANGUAGE_CPP_TRADITIONAL"
+
+        if [ "${RTI_PERFTEST_NANO_CLOCK}" == "1" ]; then
+            additional_defines=${additional_defines}" DRTI_PERFTEST_NANO_CLOCK"
+        fi
     fi
 
     if [ "${1}}" = "CPPmodern" ]; then
@@ -419,8 +430,13 @@ function additional_defines_calculation()
 
     # Adding RTI_ZEROCOPY_AVAILABLE, RTI_FLATDATA_AVAILABLE and RTI_FLATDATA_MAX_SIZE as defines
     if [ "${FLATDATA_AVAILABLE}" == "1" ]; then
-        additional_defines=${additional_defines}" DRTI_FLATDATA_AVAILABLE DRTI_FLATDATA_MAX_SIZE=${flatdata_size}"
-        additional_defines_flatdata=" -D RTI_FLATDATA_AVAILABLE -D RTI_FLATDATA_MAX_SIZE="${flatdata_size}
+        additional_defines=${additional_defines}" DRTI_FLATDATA_AVAILABLE"
+        additional_defines_flatdata=" -D RTI_FLATDATA_AVAILABLE"
+        if [ "${RTI_FLATDATA_MAX_SIZE}" != "" ]; then
+            additional_defines=${additional_defines}" DRTI_FLATDATA_MAX_SIZE=${RTI_FLATDATA_MAX_SIZE}"
+            additional_defines_flatdata=${additional_defines}" -D RTI_FLATDATA_MAX_SIZE=${RTI_FLATDATA_MAX_SIZE}"
+        fi
+
 
         if [ "${ZEROCOPY_AVAILABLE}" == "1" ]; then
             additional_rti_libs="nddsmetp ${additional_rti_libs}"
@@ -441,6 +457,10 @@ function additional_defines_calculation_micro()
         fi
     fi
     additional_defines="RTI_LANGUAGE_CPP_TRADITIONAL RTI_MICRO O3"${additional_defines}
+
+    if [ "${RTI_PERFTEST_NANO_CLOCK}" == "1" ]; then
+        additional_defines=${additional_defines}" DRTI_PERFTEST_NANO_CLOCK"
+    fi
 
     if [ "${USE_SECURE_LIBS}" == "1" ]; then
         additional_defines="${additional_defines} RTI_SECURE_PERFTEST"
@@ -558,9 +578,10 @@ function clean_src_cpp_common()
 function check_flatData_zeroCopy_available()
 {
     version=$(awk -F"version" '/version/ { split($2, a, " "); print a[1] }' <<< $(${rtiddsgen_executable} -version)) # e.g. 3.0.0
-    ddsgen_version="${version//\./}" # e.g. 300
+    # We just need the Major value of the version.
+    major=`echo $version | awk -F. '{print $1}'`
 
-    if [[ $ddsgen_version -ge $flatdata_ddsgen_version ]]; then
+    if [[ $major -ge $flatdata_ddsgen_version ]]; then
         echo -e "${INFO_TAG} FlatData is available"
         FLATDATA_AVAILABLE="1"
     fi
@@ -1275,6 +1296,9 @@ while [ "$1" != "" ]; do
         --debug)
             RELEASE_DEBUG=debug
             ;;
+        --ns-resolution)
+            RTI_PERFTEST_NANO_CLOCK=1
+            ;;
         --dynamic)
             STATIC_DYNAMIC=dynamic
             ;;
@@ -1312,11 +1336,11 @@ while [ "$1" != "" ]; do
             RTI_OPENSSLHOME=$2
             shift
             ;;
-        --flatdata-max-size)
-            flatdata_size=$2
-            sizeInt=$(($flatdata_size + 0)) # For OSX
-            if [[ sizeInt -le 0 ]]; then
-                echo -e "${ERROR_TAG} \"--flatdata-max-size n\" requires n > 0."
+        --flatData-max-size)
+            RTI_FLATDATA_MAX_SIZE=$2
+            sizeInt=$(($RTI_FLATDATA_MAX_SIZE + 0)) # For OSX
+            if [[ $sizeInt -le 0 ]]; then
+                echo -e "${ERROR_TAG} \"--flatData-max-size n\" requires n > 0."
                 exit -1
             fi
             shift

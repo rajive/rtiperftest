@@ -354,7 +354,8 @@ std::string RTIDDSImpl<T>::PrintConfiguration()
     // Asynchronous Publishing
     if (_PM->get<bool>("pub")) {
         stringStream << "\tAsynchronous Publishing: ";
-        if (_isLargeData || _PM->get<bool>("asynchronous")) {
+        if ((_isLargeData || _PM->get<bool>("asynchronous"))
+                && !_PM->get<bool>("zerocopy")) {
             stringStream << "Yes\n";
             stringStream << "\tFlow Controller: "
                          << _PM->get<std::string>("flowController")
@@ -587,6 +588,38 @@ class RTIPublisherBase : public IMessagingWriter
         DDS_DataWriterProtocolStatus status;
         _writer->get_datawriter_protocol_status(status);
         return (unsigned int)status.pulled_sample_count;
+      #else
+        // Not supported in Micro
+        return 0;
+      #endif
+    }
+
+    unsigned int getSampleCount()
+    {
+      #ifndef RTI_MICRO
+        DDS_DataWriterCacheStatus status;
+        DDS_ReturnCode_t retcode = _writer->get_datawriter_cache_status(status);
+        if (retcode != DDS_RETCODE_OK) {
+            fprintf(stderr, "get_datawriter_cache_status failed: %d.\n", retcode);
+            return 0;
+        }
+        return (unsigned int)status.sample_count;
+      #else
+        // Not supported in Micro
+        return 0;
+      #endif
+    }
+
+    unsigned int getSampleCountPeak()
+    {
+      #ifndef RTI_MICRO
+        DDS_DataWriterCacheStatus status;
+        DDS_ReturnCode_t retcode = _writer->get_datawriter_cache_status(status);
+        if (retcode != DDS_RETCODE_OK) {
+            fprintf(stderr, "get_datawriter_cache_status failed: %d.\n", retcode);
+            return 0;
+        }
+        return (unsigned int)status.sample_count_peak;
       #else
         // Not supported in Micro
         return 0;
@@ -1727,6 +1760,38 @@ class RTISubscriberBase : public IMessagingReader
         }
         return true;
     }
+
+    unsigned int getSampleCount()
+    {
+      #ifndef RTI_MICRO
+        DDS_DataReaderCacheStatus status;
+        DDS_ReturnCode_t retcode = _reader->get_datareader_cache_status(status);
+        if (retcode != DDS_RETCODE_OK) {
+            fprintf(stderr, "get_datareader_cache_status failed: %d.\n", retcode);
+            return 0;
+        }
+        return (unsigned int)status.sample_count;
+      #else
+        // Not supported in Micro
+        return 0;
+      #endif
+    }
+
+    unsigned int getSampleCountPeak()
+    {
+      #ifndef RTI_MICRO
+        DDS_DataReaderCacheStatus status;
+        DDS_ReturnCode_t retcode = _reader->get_datareader_cache_status(status);
+        if (retcode != DDS_RETCODE_OK) {
+            fprintf(stderr, "get_datareader_cache_status failed: %d.\n", retcode);
+            return 0;
+        }
+        return (unsigned int)status.sample_count_peak;
+      #else
+        // Not supported in Micro
+        return 0;
+      #endif
+    }
 };
 
 template <typename T>
@@ -2085,7 +2150,7 @@ class RTIDynamicDataSubscriber : public RTISubscriberBase<DDS_DynamicData>
                 this->_message.seq_num,
                 "seq_num",
                 DynamicDataMembersId::GetInstance().at("seq_num"));
-            if (retcode != DDS_RETCODE_OK){
+            if (retcode != DDS_RETCODE_OK) {
                 fprintf(stderr,
                         "ReceiveMessage() get_ulong(seq_num) failed: %d.\n",
                         retcode);
@@ -2561,7 +2626,7 @@ double RTIDDSImpl<T>::obtain_dds_serialize_time_cost(
             RTI_OSAPI_ALIGNMENT_DEFAULT);
 
     /* Serialize time calculating */
-    timeInit = (unsigned int) PerftestClock::getInstance().getTimeUsec();
+    timeInit = (unsigned int) PerftestClock::getInstance().getTime();
 
     for (unsigned int i = 0; i < iters; i++) {
         if (DDS_RETCODE_OK != T::TypeSupport::serialize_data_to_cdr_buffer(
@@ -2574,7 +2639,7 @@ double RTIDDSImpl<T>::obtain_dds_serialize_time_cost(
         }
     }
 
-    timeFinish = (unsigned int) PerftestClock::getInstance().getTimeUsec();
+    timeFinish = (unsigned int) PerftestClock::getInstance().getTime();
 
     serializeTime = timeFinish - timeInit;
 
@@ -2662,7 +2727,7 @@ double RTIDDSImpl<T>::obtain_dds_deserialize_time_cost(
     }
 
     /* Deserialize time calculating */
-    timeInit = (unsigned int) PerftestClock::getInstance().getTimeUsec();
+    timeInit = (unsigned int) PerftestClock::getInstance().getTime();
 
     for (unsigned int i = 0; i < iters; i++) {
         if (DDS_RETCODE_OK != T::TypeSupport::deserialize_data_from_cdr_buffer(
@@ -2676,7 +2741,7 @@ double RTIDDSImpl<T>::obtain_dds_deserialize_time_cost(
         }
     }
 
-    timeFinish = (unsigned int) PerftestClock::getInstance().getTimeUsec();
+    timeFinish = (unsigned int) PerftestClock::getInstance().getTime();
 
     deSerializeTime = timeFinish - timeInit;
 
@@ -3734,9 +3799,9 @@ double RTIDDSImpl_FlatData<T>::obtain_dds_serialize_time_cost_override(
         bin_data.add_n(sampleSize);
         bin_data.finish();
 
-        double start = (unsigned int) PerftestClock::getInstance().getTimeUsec();
+        double start = (unsigned int) PerftestClock::getInstance().getTime();
         builder.finish_sample();
-        double end = (unsigned int) PerftestClock::getInstance().getTimeUsec();
+        double end = (unsigned int) PerftestClock::getInstance().getTime();
         total_time += end - start;
     }
 
@@ -3775,11 +3840,11 @@ double RTIDDSImpl_FlatData<T>::obtain_dds_deserialize_time_cost_override(
 
     builder.finish_sample();
 
-    double start = (unsigned int) PerftestClock::getInstance().getTimeUsec();
+    double start = (unsigned int) PerftestClock::getInstance().getTime();
     for (unsigned int i = 0; i < iters; i++) {
         T::from_buffer(buffer);
     }
-    double end = (unsigned int) PerftestClock::getInstance().getTimeUsec();
+    double end = (unsigned int) PerftestClock::getInstance().getTime();
 
     delete[] buffer;
 

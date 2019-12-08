@@ -36,7 +36,7 @@ releases:
 -  The ``--secure`` and ``--openssl-home`` parameters will not work for
    versions prior to *RTI Connext DDS* 5.2.5.
 
--  Java code generation against *RTI Connext DDS 5.2.0.x* will fail 
+-  Java code generation against *RTI Connext DDS 5.2.0.x* will fail
    out-of-the-box. You can disable this by adding the ``--skip-java-build``
    flag. See the Known Issues section for more information and
    alternatives.
@@ -51,16 +51,36 @@ Release Notes Master
 What's New in Master
 ~~~~~~~~~~~~~~~~~~~~
 
+New tutorial section in the documentation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A new tutorial section has been added to the documentation.
+
+The main purpose of that section is to hold examples of how to properly use
+*RTI Perftest* in real life scenarios to gather the limits for throughput
+and latency. It will also help showing what is the impact of using *RTI
+Connext DDS* features.
+
+New command line option to show the *DataWriter* and *DataReader* queue stats (#251)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By using the `-cacheStats` command line parameter *RTI Perftest* now displays the
+*Send Queue* `sample_count` and `sample_count_peak` in the publisher side. For the
+subscriber side, *RTI Perftest* displays the *Receive Queue* `sample_count` and
+`sample_count_peak`.
+
+Compilation option to measure latency time in nano-seconds (#253)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+*RTI Perftest* can now be compiled using the Unix calls to measure latency
+in *nanoseconds*, instead of using the *RTI Connext DDS Professional* calls
+which return the time in *microseconds*.
+
+This option can be enabled at compilation time by using the `--ns-resolution`.
+It is only implemented for Unix Systems.
+
 What's Fixed in Master
 ~~~~~~~~~~~~~~~~~~~~~~
-
-Error finalizing the application when using `SHMEM` for *RTI Connext DDS Micro* (#234)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-When using *RTI Connext DDS Micro* and setting the transport to `SHMEM` an error
-would appear at the end of the test in both publisher and subscriber by the time
-he `finalize_instance()` function is called. This errors has been resolved.
-
 
 Improve message when NDDSHOME/RTIMEHOME paths are not reachable (#222)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -89,6 +109,20 @@ Wrong capitalization for command line option `--customTypeFlatData` (#232)
 Fixed issue in the `build.sh` and `build.bat` where the command line parameter
 used to specify that a custom type for Flat Data was provided was wrongly
 spelled.
+
+Error finalizing the application when using `SHMEM` for *RTI Connext DDS Micro* (#234)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When using *RTI Connext DDS Micro* and setting the transport to `SHMEM` an error
+would appear at the end of the test in both publisher and subscriber by the time
+he `finalize_instance()` function is called. This errors has been resolved.
+
+The version of *rtiddsgen* is now properly compared to identify the support of certain features (#237)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In previous releases, the *rtiddsgen* version number was not correctly obtained
+by the *RTI Perftest* compilation scripts. This would cause the inclusion of the
+wrong compilation flags in certain cases.
 
 Fix incorrect incorrect governance file values for Security (#239)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -120,6 +154,50 @@ The value to `max_instances` assigned to the resouce limits in the *DataReader*
 side in *RTI Perftest* when compiling against *RTI Connext DDS Micro* was not
 set correctly, and it would not account for the extra sample used to skip the
 *CFTs*.
+
+Summary displays *Asynchronous publishing* active when using *Zero-Copy* and *Large Data* (#246)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Fixed issue where *RTI Perftest* would present in the summary of the *Publisher*
+side the *Asynchronous Publishing* set to *true* regardless on if the test was
+using *Zero-Copy* or not.
+
+When using *Zero-Copy*, the size of the message being sent will always be
+constant, independent on the size of the sample being sent, as it is just a
+reference to where the sample is stored in memory.
+This means that *Asynchronous Publishing* is not needed in any case.
+
+Fix documentation examples for *FlatData* and *Zero-Copy* (#249)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In the documentation examples for *FlatData* and *Zero-Copy* the data sizes used
+for publisher and subscriber were not matching. Also, in the *Best Effort* case,
+the command lines were not including the `-bestEffort` option.
+
+Make discovery process more robust (#261)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In previous versions, *RTI Perftest* was not checking that all the entities of
+the three topics (AnnouncementTopic, ThroughputTopic and LatencyTopic) were
+discovering each other, only the ones for the Throughput topic. This could lead
+to some corner cases where the performance test would not work correctly. This
+behavior has been corrected.
+
+Workaround for MICRO-2191 (#261)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The combination of the previous issue and a bug in *RTI Connext DDS Micro*
+(MICRO-2191), would cause that the LatencyTopic endpoints were not correctly
+discovered in certain cases, making impossible to gather Latency Numbers.
+
+Update the idl to use prefix annotations (#270)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In previous versions, *RTI Perftest* idls used a combination of the new
+prefix annotations and the old ones. This inconsistency has been fixed.
+
+This imposes a restriction (already existing) in the minimum version for which
+*RTI Perftest* can be compiled to *RTI Connext DDS Professional* 5.3.1.
 
 Release Notes 3.0
 -----------------

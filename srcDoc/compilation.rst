@@ -142,7 +142,7 @@ The ``build.sh`` script accepts the following list of parameters:
 |                      |           | details and examples of use in    |
 |                      |           | the documentation                 |
 +----------------------+-----------+-----------------------------------+
-| --flatdata-max-size  | Optional  | Specify the maximum size in Bytes |
+| --flatData-max-size  | Optional  | Specify the maximum size in Bytes |
 | <size>               |           | of the sample to be sent when     |
 |                      |           | using FlatData language binding.  |
 |                      |           | Default: 10485760                 |
@@ -197,6 +197,14 @@ The ``build.sh`` script accepts the following list of parameters:
 |                      |           | ``java`` executables should be    |
 |                      |           | available from your ``$PATH``     |
 |                      |           | variable.                         |
++----------------------+-----------+-----------------------------------+
+| --ns-resolution      | Optional  | Try to use the system real-time   |
+|                      |           | clock to get nano-second          |
+|                      |           | resolution. Availability will     |
+|                      |           | depend on the OS.                 |
+|                      |           | For the Classic C++ Implementation|
+|                      |           | only.                             |
+|                      |           | Default is not enabled.           |
 +----------------------+-----------+-----------------------------------+
 | --osx-shmem-shmmax   | Optional  | Specify the maximum segment size  |
 |                      |           | for shared memory in OSX.         |
@@ -279,7 +287,7 @@ examples:
 
    ::
 
-       ./build.sh --platform x64Linux4gcc7.3.0 --flatdata-max-size 104857600
+       ./build.sh --platform x64Linux4gcc7.3.0 --flatData-max-size 104857600
 
 -  Generation and cross-compilation for a non-native architecture (``armv8Linux4.4gcc5.4.0``).
    Note how you can specify the Compiler/Linker used by *rtiddsgen*.
@@ -436,7 +444,7 @@ The ``build.bat`` script accepts the following list of parameters:
 |                      |           | details and examples of use in    |
 |                      |           | the documentation                 |
 +----------------------+-----------+-----------------------------------+
-| --flatdata-max-size  | Optional  | Specify the maximum size in Bytes |
+| --flatData-max-size  | Optional  | Specify the maximum size in Bytes |
 | <size>               |           | of the sample to be sent when     |
 |                      |           | using FlatData language binding.  |
 |                      |           | Default: 10485760                 |
@@ -551,7 +559,7 @@ examples:
 
    ::
 
-       ./build.bat -platform x64Win64VS2012 --flatdata-max-size 104857600
+       ./build.bat -platform x64Win64VS2012 --flatData-max-size 104857600
 
 -  Generation and compilation for a given architecture
    (``x64Win64VS2012``) for *Connext DDS Micro*, specifying the RTIMEHOME.
